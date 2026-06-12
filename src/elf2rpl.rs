@@ -1,5 +1,6 @@
 use crate::elf;
 use binrw::{BinRead, BinWrite};
+use flate2::{Crc, write::ZlibEncoder};
 use std::{
     ffi::CStr,
     fs,
@@ -7,15 +8,9 @@ use std::{
     path::Path,
     usize,
 };
-use zlib_rs::{Deflate, crc32::crc32};
-
-use flate2::{
-    CrcWriter,
-    write::{DeflateEncoder, ZlibEncoder},
-};
 
 #[derive(Debug)]
-pub struct Section {
+struct Section {
     pub header: elf::SectionHeader,
     pub name: String,
     pub data: SectionData,
@@ -23,7 +18,7 @@ pub struct Section {
 }
 
 #[derive(Debug, Clone)]
-pub struct SectionData(Vec<u8>);
+struct SectionData(Vec<u8>);
 
 impl SectionData {
     pub fn len(&self) -> usize {
@@ -34,9 +29,9 @@ impl SectionData {
         &self.0
     }
 
-    pub fn as_bytes_mut(&mut self) -> &mut [u8] {
-        &mut self.0
-    }
+    // pub fn as_bytes_mut(&mut self) -> &mut [u8] {
+    //     &mut self.0
+    // }
 
     pub fn as_vec(&self) -> Vec<u8> {
         self.0.clone()
@@ -73,19 +68,19 @@ impl SectionData {
         .unwrap()
     }
 
-    pub fn from_symbol(&mut self, symbols: Vec<elf::Symbol>) {
-        let mut writer = Cursor::new(Vec::new());
+    // pub fn from_symbol(&mut self, symbols: Vec<elf::Symbol>) {
+    //     let mut writer = Cursor::new(Vec::new());
 
-        symbols
-            .write_options(&mut writer, binrw::Endian::Big, ())
-            .unwrap();
+    //     symbols
+    //         .write_options(&mut writer, binrw::Endian::Big, ())
+    //         .unwrap();
 
-        self.0 = writer.into_inner();
-    }
+    //     self.0 = writer.into_inner();
+    // }
 }
 
 #[derive(Debug)]
-pub struct ElfFile {
+struct ElfFile {
     pub header: elf::Header,
     pub sections: Vec<Section>,
     pub num_discarded_sections: usize,
@@ -98,7 +93,7 @@ impl ElfFile {
 
     const DEFLATE_MIN_SECTION_SIZE: usize = 0x18;
 
-    pub fn read(path: impl AsRef<Path>) -> Self {
+    fn read(path: impl AsRef<Path>) -> Self {
         let file = fs::read(path.as_ref()).unwrap();
 
         let mut cursor = Cursor::new(&file);
@@ -200,7 +195,7 @@ impl ElfFile {
         }
     }
 
-    pub fn fix_section_flags(&mut self) {
+    fn fix_section_flags(&mut self) {
         for section in &mut self.sections {
             match section.name.as_str() {
                 ".cafe_load_bounds" => section.header.flags = elf::SectionFlags::ALLOC,
@@ -212,7 +207,7 @@ impl ElfFile {
         }
     }
 
-    pub fn fix_section_types(&mut self) {
+    fn fix_section_types(&mut self) {
         for section in &mut self.sections {
             if section.name == ".fexports" {
                 section.header.ty = elf::SectionType::RPL_EXPORTS;
@@ -223,7 +218,7 @@ impl ElfFile {
         }
     }
 
-    pub fn fix_relocations(&mut self) {
+    fn fix_relocations(&mut self) {
         for i in 0..self.sections.len() {
             if self.sections[i].header.ty != elf::SectionType::RELA {
                 continue;
@@ -289,7 +284,7 @@ impl ElfFile {
         }
     }
 
-    pub fn fix_loader_virtual_addresses(&mut self) {
+    fn fix_loader_virtual_addresses(&mut self) {
         let mut load_max = Self::LOAD_BASE_ADDRESS;
         for section in &self.sections {
             if section.header.addr >= load_max {
@@ -366,7 +361,7 @@ impl ElfFile {
         }
     }
 
-    pub fn generate_file_info_section(&mut self, is_rpl: bool) {
+    fn generate_file_info_section(&mut self, is_rpl: bool) {
         let mut info = elf::RplFileInfo {
             version: 0xCAFE0402,
             text_size: 0,
@@ -459,7 +454,7 @@ impl ElfFile {
         self.header.shnum += 1;
     }
 
-    pub fn generate_crc_section(&mut self) {
+    fn generate_crc_section(&mut self) {
         let mut crcs = Vec::new();
 
         for section in &self.sections {
@@ -470,7 +465,9 @@ impl ElfFile {
             }
 
             if section.data.len() > 0 {
-                crc = crc32(0, section.data.as_bytes());
+                let mut hasher = Crc::new();
+                hasher.update(section.data.as_bytes());
+                crc = hasher.sum();
             }
 
             crcs.push(crc);
@@ -512,7 +509,7 @@ impl ElfFile {
         self.header.shnum += 1;
     }
 
-    pub fn fix_file_header(&mut self) {
+    fn fix_file_header(&mut self) {
         self.header.abi = elf::Eabi::CAFE;
         self.header.ty = 0xFE01;
         self.header.flags = 0;
@@ -524,29 +521,7 @@ impl ElfFile {
         self.header.shstrndx = self.sections[self.header.shstrndx as usize].index as u16;
     }
 
-    // pub fn deflate_sections(&mut self) {
-    //     for section in &mut self.sections {
-    //         if section.data.len() < Self::DEFLATE_MIN_SECTION_SIZE
-    //             || section.header.ty == elf::SectionType::RPL_CRCS
-    //             || section.header.ty == elf::SectionType::RPL_FILEINFO
-    //         {
-    //             continue;
-    //         }
-
-    //         let mut deflated = Vec::new();
-    //         let mut encoder = ZlibEncoder::new(&mut deflated, flate2::Compression::new(6));
-    //         encoder.write_all(section.data.as_bytes()).unwrap();
-    //         let deflated = encoder.finish().unwrap();
-
-    //         let size = (section.data.len() as u32).to_be_bytes();
-    //         deflated[0..4].copy_from_slice(&size);
-
-    //         section.data.from_vec(deflated.clone());
-    //         section.header.flags |= elf::SectionFlags::DEFLATED;
-    //     }
-    // }
-
-    pub fn deflate_sections(&mut self) {
+    fn deflate_sections(&mut self) {
         for section in &mut self.sections {
             if section.data.len() < Self::DEFLATE_MIN_SECTION_SIZE
                 || section.header.ty == elf::SectionType::RPL_CRCS
@@ -572,7 +547,7 @@ impl ElfFile {
         }
     }
 
-    pub fn calculate_section_offsets(&mut self) {
+    fn calculate_section_offsets(&mut self) {
         let mut offset = self.header.shoff;
 
         offset += ((self.sections.len() - self.num_discarded_sections)
@@ -752,7 +727,7 @@ impl ElfFile {
         }
     }
 
-    pub fn write(&self, path: impl AsRef<Path>) {
+    fn write(&self, path: impl AsRef<Path>) {
         let shoff = self.header.shoff;
 
         let mut cursor = Cursor::new(Vec::new());
@@ -778,13 +753,13 @@ impl ElfFile {
     }
 }
 
-pub fn convert(input: impl AsRef<Path>, output: impl AsRef<Path>) {
+pub fn convert(input: impl AsRef<Path>, output: impl AsRef<Path>, is_rpl: bool) {
     let mut elf = ElfFile::read(input);
     elf.fix_section_flags();
     elf.fix_section_types();
     elf.fix_relocations();
     elf.fix_loader_virtual_addresses();
-    elf.generate_file_info_section(false);
+    elf.generate_file_info_section(is_rpl);
     elf.generate_crc_section();
     elf.fix_file_header();
     elf.deflate_sections();

@@ -26,12 +26,19 @@ enum Commands {
     },
     /// Upload
     Upload { wiiload: Option<PathBuf> },
-    /// Convert ELF to RPX
+    /// Convert ELF to RPX (executable)
     Rpx {
         /// Path to the elf binary
         elf: PathBuf,
         /// Path to the resulting rpx binary. Defaults to elf path with ".rpx" extension.
         rpx: Option<PathBuf>,
+    },
+    /// Convert ELF to RPL (library)
+    Rpl {
+        /// Path to the elf binary
+        elf: PathBuf,
+        /// Path to the resulting rpl binary. Defaults to elf path with ".rpl" extension.
+        rpl: Option<PathBuf>,
     },
 }
 
@@ -50,7 +57,11 @@ fn main() {
         }
         Commands::Rpx { elf, rpx } => {
             let rpx = rpx.clone().unwrap_or_else(|| elf.with_extension("rpx"));
-            elf2rpl::convert(elf, rpx);
+            elf2rpl::convert(elf, rpx, false);
+        }
+        Commands::Rpl { elf, rpl } => {
+            let rpl = rpl.clone().unwrap_or_else(|| elf.with_extension("rpl"));
+            elf2rpl::convert(elf, rpl, true);
         }
     }
 }

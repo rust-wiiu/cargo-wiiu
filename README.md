@@ -1,14 +1,14 @@
 # cargo-wiiu
 
-Cargo extension to easily wotk with Nintendo Wii U binaries.
+Cargo extension to easily work with Nintendo Wii U binaries.
 
 ## Installation
 
-...
+TBD
 
 ## Usage
 
-...
+TBD
 
 ## Acknowledgments
 
