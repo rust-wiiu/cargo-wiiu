@@ -1,1 +1,5 @@
 /target
+*.elf
+*.rpx
+*.rpl
+*.wuhb
