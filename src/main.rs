@@ -10,12 +10,12 @@ mod upload;
 mod wuhb;
 
 use anyhow::Context;
-use clap::{Parser, Subcommand};
+use clap::{Args, Parser, Subcommand};
 use std::{fs, net::Ipv4Addr, path::PathBuf};
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
-struct Args {
+struct Cli {
     #[command(subcommand)]
     command: Commands,
 }
@@ -34,6 +34,119 @@ fn extension<const N: usize>(
                 ))
             }
         }
+    }
+}
+
+#[derive(Args, Debug, Clone)]
+struct WuhbConfig {
+    /// Display name of the app in the Home Menu
+    #[arg(long, default_value = "Rust App")]
+    long_name: String,
+    /// ???
+    #[arg(long, default_value = "Rust App")]
+    short_name: String,
+    /// Icon of the app in the Home Menu
+    #[arg(long, value_parser = extension(["png", "tga"]))]
+    icon: Option<PathBuf>,
+    /// Splash screen on TV
+    #[arg(long, value_parser = extension(["png", "tga"]))]
+    tv_image: Option<PathBuf>,
+    /// Splash screen on DRC
+    #[arg(long, value_parser = extension(["png", "tga"]))]
+    drc_image: Option<PathBuf>,
+    /// Path to the content directory
+    #[arg(long)]
+    content: Option<PathBuf>,
+}
+
+impl Default for WuhbConfig {
+    fn default() -> Self {
+        Self {
+            long_name: String::from("Rust App"),
+            short_name: String::from("Rust App"),
+            icon: None,
+            tv_image: None,
+            drc_image: None,
+            content: None,
+        }
+    }
+}
+
+impl WuhbConfig {
+    fn read_manifest_metadata(&mut self) -> anyhow::Result<()> {
+        let metadata = cargo_metadata::MetadataCommand::new()
+            .current_dir(std::env::current_dir().unwrap())
+            .no_deps()
+            .exec();
+
+        match metadata {
+            Ok(metadata) => match metadata.root_package().unwrap().metadata.get("wuhb") {
+                Some(wuhb) => {
+                    if self.long_name == "Rust App" {
+                        if let Some(manifest_val) = wuhb.get("long-name") {
+                            self.long_name = manifest_val
+                                .as_str()
+                                .context("`long-name` manifest entry must be a string")
+                                .map(String::from)?;
+                        }
+                    }
+
+                    if self.short_name == "Rust App" {
+                        if let Some(manifest_val) = wuhb.get("short-name") {
+                            self.short_name = manifest_val
+                                .as_str()
+                                .context("`short-name` manifest entry must be a string")
+                                .map(String::from)?;
+                        }
+                    }
+
+                    self.icon = wuhb
+                        .get("icon")
+                        .map(|v| {
+                            v.as_str()
+                                .context("`icon` manifest entry must be a string")
+                                .map(PathBuf::from) // Removed semicolon here
+                        })
+                        .transpose()?;
+
+                    self.tv_image = wuhb
+                        .get("tv-image")
+                        .map(|v| {
+                            v.as_str()
+                                .context("`tv-image` manifest entry must be a string")
+                                .map(PathBuf::from) // Removed semicolon here
+                        })
+                        .transpose()?;
+
+                    self.drc_image = wuhb
+                        .get("drc-image")
+                        .map(|v| {
+                            v.as_str()
+                                .context("`drc-image` manifest entry must be a string")
+                                .map(PathBuf::from) // Removed semicolon here
+                        })
+                        .transpose()?;
+
+                    self.content = wuhb
+                        .get("content")
+                        .map(|v| {
+                            v.as_str()
+                                .context("`content` manifest entry must be a string")
+                                .map(PathBuf::from) // Removed semicolon here
+                        })
+                        .transpose()?;
+                }
+                None => {
+                    log::info!("No \"wuhb\" section in manifest found");
+                }
+            },
+            Err(e) => {
+                log::warn!("Executed outside of a Rust crate. Using default values.");
+                log::info!("Error: {e}");
+            }
+        }
+
+        Ok(())
     }
 }
 
@@ -79,20 +192,23 @@ enum Commands {
     },
     Wuhb {
         /// Path to the binary (elf / rpx)
-        #[arg(value_parser = extension(["elf", "rpx"]))]
-        binary: PathBuf,
-        /// Path to the resulting WUHB archive. Defaults to binary path with ".wuhb" extension.
+        #[arg(value_parser = extension(["rpx"]))]
+        rpx: PathBuf,
+        /// Path to the resulting WUHB archive. Defaults to rpx path with ".wuhb" extension.
         #[arg(value_parser = extension(["wuhb"]))]
         wuhb: Option<PathBuf>,
+        /// Configuration flags for the WUHB archive
+        #[command(flatten)]
+        config: WuhbConfig,
     },
 }
 
 fn main() -> anyhow::Result<()> {
     env_logger::init();
 
-    let args = Args::parse();
+    let cli = Cli::parse();
 
-    match &args.command {
+    match cli.command {
         Commands::Build { cargo_args: args } => {
             println!("cargo wiiu build {args:?}");
         }
@@ -102,33 +218,31 @@ fn main() -> anyhow::Result<()> {
         Commands::Upload { binary, ip } => {
             log::info!("Read input file");
             let data =
-                fs::read(binary).context(format!("Failed to read file: {}", binary.display()))?;
-            upload::upload_binary(data, *ip)?;
+                fs::read(&binary).context(format!("Failed to read file: {}", binary.display()))?;
+            upload::upload_binary(data, ip)?;
         }
         Commands::Rpx { elf, rpx } => {
-            let rpx = rpx.clone().unwrap_or_else(|| elf.with_extension("rpx"));
+            let rpx = rpx.unwrap_or_else(|| elf.with_extension("rpx"));
             rpl::from_elf(elf, rpx, false);
         }
         Commands::Rpl { elf, rpl } => {
-            let rpl = rpl.clone().unwrap_or_else(|| elf.with_extension("rpl"));
+            let rpl = rpl.unwrap_or_else(|| elf.with_extension("rpl"));
             rpl::from_elf(elf, rpl, true);
         }
-        Commands::Wuhb { binary, wuhb } => {
-            let wuhb = wuhb
-                .clone()
-                .unwrap_or_else(|| binary.with_extension("wuhb"));
+        Commands::Wuhb {
+            rpx,
+            wuhb,
+            mut config,
+        } => {
+            let wuhb = wuhb.unwrap_or_else(|| rpx.with_extension("wuhb"));
 
-            let rpx = match binary.extension().unwrap().to_str().unwrap() {
-                "rpx" => {
-                    log::info!("Read input file");
-                    fs::read(binary)
-                        .context(format!("Failed to read file: {}", binary.display()))?
-                }
-                "elf" => todo!("Indirect conversion: elf -> rpx -> wuhb"),
-                e => panic!("Unsupported main executable: {e}"),
-            };
+            log::info!("Read input file");
+            let rpx = fs::read(&rpx).context(format!("Failed to read file: {}", rpx.display()))?;
 
-            let content = wuhb::from_rpx(rpx, "Test App")?;
+            log::info!("Read manifest file");
+            config.read_manifest_metadata()?;
+
+            let content = wuhb::from_rpx(rpx, config)?;
 
             log::info!("Write output file");
             fs::write(&wuhb, content)

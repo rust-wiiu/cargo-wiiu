@@ -1,6 +1,10 @@
 use binrw::{BinWrite, binrw};
 use indextree::{Arena, NodeId};
-use std::io::{Cursor, Write};
+use std::{
+    env,
+    io::{Cursor, Write},
+    path::PathBuf,
+};
 
 #[binrw]
 #[brw(big)]
@@ -400,7 +404,7 @@ impl RomFs {
     }
 }
 
-pub fn from_rpx(rpx: Vec<u8>, name: &str) -> anyhow::Result<Vec<u8>> {
+pub fn from_rpx(rpx: Vec<u8>, config: super::WuhbConfig) -> anyhow::Result<Vec<u8>> {
     let mut fs = RomFs::new();
 
     let code = fs.add_folder(fs.root, "code");
@@ -413,8 +417,8 @@ pub fn from_rpx(rpx: Vec<u8>, name: &str) -> anyhow::Result<Vec<u8>> {
         "meta.ini",
         format!(
             "[menu]\nlongname={}\nshortname={}\nauthor={}\n",
-            name,
-            name,
+            &config.long_name,
+            &config.short_name,
             if cfg!(test) {
                 // Insert the string used by wuhbtool to allow for byte comparison
                 "Built with devkitPPC & wut"
@@ -505,6 +509,7 @@ pub fn from_rpx(rpx: Vec<u8>, name: &str) -> anyhow::Result<Vec<u8>> {
 
 #[cfg(test)]
 mod tests {
+    use crate::WuhbConfig;
     use rstest::rstest;
     use std::{fs, path::PathBuf};
 
@@ -515,7 +520,15 @@ mod tests {
         let rpx = fs::read(format!("./tests/dkp/rpx/{filename}.rpx")).unwrap();
         let wuhb = fs::read(format!("./tests/dkp/wuhb/{filename}.wuhb")).unwrap();
 
-        let converted = super::from_rpx(rpx, filename).unwrap();
+        let converted = super::from_rpx(
+            rpx,
+            WuhbConfig {
+                long_name: String::from(filename),
+                short_name: String::from(filename),
+                ..Default::default()
+            },
+        )
+        .unwrap();
 
         assert_eq!(converted, wuhb);
     }

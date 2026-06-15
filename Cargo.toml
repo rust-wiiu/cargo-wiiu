@@ -13,6 +13,7 @@ keywords = ["nintendo", "homebrew", "wiiu"]
 [dependencies]
 anyhow = "1.0.102"
 binrw = "0.15.1"
+cargo_metadata = "0.23.1"
 clap = { version = "4.6.1", features = ["derive"] }
 env_logger = "0.11.10"
 flate2 = { version = "1.1.9", features = ["zlib-rs"] }
