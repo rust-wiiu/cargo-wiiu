@@ -753,7 +753,7 @@ impl ElfFile {
     }
 }
 
-pub fn convert(input: impl AsRef<Path>, output: impl AsRef<Path>, is_rpl: bool) {
+pub fn from_elf(input: impl AsRef<Path>, output: impl AsRef<Path>, is_rpl: bool) {
     let mut elf = ElfFile::read(input);
     elf.fix_section_flags();
     elf.fix_section_types();
