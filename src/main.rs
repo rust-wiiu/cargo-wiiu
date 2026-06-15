@@ -1,5 +1,5 @@
 mod elf;
-mod elf2rpl;
+mod rpl;
 mod wuhb;
 
 use clap::{Parser, Subcommand};
@@ -10,6 +10,23 @@ use std::{fs, path::PathBuf};
 struct Args {
     #[command(subcommand)]
     command: Commands,
+}
+
+fn extension<const N: usize>(
+    exts: [&'static str; N],
+) -> impl Fn(&str) -> Result<PathBuf, String> + Clone + Send + Sync + 'static {
+    move |s| {
+        let path = PathBuf::from(s);
+        match path.extension() {
+            Some(e) if exts.iter().any(|&ext| e == ext) => Ok(path),
+            _ => {
+                let listed = exts.join(", ");
+                Err(format!(
+                    "'{s}' does not have a valid extension (expected: {listed})"
+                ))
+            }
+        }
+    }
 }
 
 #[derive(Subcommand)]
@@ -30,21 +47,27 @@ enum Commands {
     /// Convert ELF to RPX (executable)
     Rpx {
         /// Path to the elf binary
+        #[arg(value_parser = extension(["elf"]))]
         elf: PathBuf,
         /// Path to the resulting rpx binary. Defaults to elf path with ".rpx" extension.
+        #[arg(value_parser = extension(["rpx"]))]
         rpx: Option<PathBuf>,
     },
     /// Convert ELF to RPL (library)
     Rpl {
         /// Path to the elf binary
+        #[arg(value_parser = extension(["elf"]))]
         elf: PathBuf,
         /// Path to the resulting rpl binary. Defaults to elf path with ".rpl" extension.
+        #[arg(value_parser = extension(["rpl"]))]
         rpl: Option<PathBuf>,
     },
     Wuhb {
         /// Path to the binary (elf / rpx)
+        #[arg(value_parser = extension(["elf", "rpx"]))]
         binary: PathBuf,
         /// Path to the resulting WUHB archive. Defaults to binary path with ".wuhb" extension.
+        #[arg(value_parser = extension(["wuhb"]))]
         wuhb: Option<PathBuf>,
     },
 }
@@ -64,11 +87,11 @@ fn main() {
         }
         Commands::Rpx { elf, rpx } => {
             let rpx = rpx.clone().unwrap_or_else(|| elf.with_extension("rpx"));
-            elf2rpl::convert(elf, rpx, false);
+            rpl::from_elf(elf, rpx, false);
         }
         Commands::Rpl { elf, rpl } => {
             let rpl = rpl.clone().unwrap_or_else(|| elf.with_extension("rpl"));
-            elf2rpl::convert(elf, rpl, true);
+            rpl::from_elf(elf, rpl, true);
         }
         Commands::Wuhb { binary, wuhb } => {
             let wuhb = wuhb
