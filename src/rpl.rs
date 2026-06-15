@@ -564,12 +564,6 @@ impl ElfFile {
             section.header.offset = 0;
         }
 
-        println!("0");
-        for section in &self.sections {
-            println!("{} {:?}", section.name, section.header.flags);
-        }
-
-        println!("1");
         for section in &mut self.sections {
             if section.header.ty == elf::SectionType::RPL_CRCS {
                 section.header.offset = offset;
@@ -583,7 +577,6 @@ impl ElfFile {
             }
         }
 
-        println!("2");
         for section in &mut self.sections {
             if section.header.ty == elf::SectionType::RPL_FILEINFO {
                 section.header.offset = offset;
@@ -597,7 +590,6 @@ impl ElfFile {
             }
         }
 
-        println!("3");
         // First the "dataMin / dataMax" sections, which are:
         for section in &mut self.sections {
             if section.header.size == 0
@@ -616,15 +608,9 @@ impl ElfFile {
                 section.header.offset = offset;
                 section.header.size = section.data.len() as u32;
                 offset += section.header.size;
-
-                println!(
-                    "{} {:#X} {:#X} {:?}",
-                    section.name, section.header.offset, section.header.size, section.header.flags
-                );
             }
         }
 
-        println!("4");
         // Next the "readMin / readMax" sections, which are:
         for section in &mut self.sections {
             if section.header.size > 0 && section.header.flags.0 & elf::SectionFlags::ALLOC.0 != 0 {
@@ -637,16 +623,10 @@ impl ElfFile {
                     section.header.offset = offset;
                     section.header.size = section.data.len() as u32;
                     offset += section.header.size;
-
-                    println!(
-                        "{} {:#X} {:#X} ",
-                        section.name, section.header.offset, section.header.size
-                    );
                 }
             }
         }
 
-        println!("5");
         // Next the "textMin / textMax" sections, which are:
         for section in &mut self.sections {
             if section.header.size == 0
@@ -664,15 +644,9 @@ impl ElfFile {
                 section.header.offset = offset;
                 section.header.size = section.data.len() as u32;
                 offset += section.header.size;
-
-                println!(
-                    "{} {:#X} {:#X} {:?}",
-                    section.name, section.header.offset, section.header.size, section.header.flags
-                );
             }
         }
 
-        println!("6");
         // Next the "tempMin / tempMax" sections, which are:
         for section in &mut self.sections {
             if section.header.size == 0
@@ -690,15 +664,9 @@ impl ElfFile {
                 section.header.offset = offset;
                 section.header.size = section.data.len() as u32;
                 offset += section.header.size;
-
-                println!(
-                    "{} {:#X} {:#X} {:?}",
-                    section.name, section.header.offset, section.header.size, section.header.flags
-                );
             }
         }
 
-        println!("7");
         for i in 0..self.sections.len() {
             if self.sections[i].header.offset == 0
                 && self.sections[i].header.ty != elf::SectionType::NULL
@@ -755,14 +723,25 @@ impl ElfFile {
 
 pub fn from_elf(input: impl AsRef<Path>, output: impl AsRef<Path>, is_rpl: bool) {
     let mut elf = ElfFile::read(input);
+    log::info!("Elf file parsed successfully");
     elf.fix_section_flags();
+    log::debug!("Section flags fixed");
     elf.fix_section_types();
+    log::debug!("Section types fixed");
     elf.fix_relocations();
+    log::debug!("Relocations fixed");
     elf.fix_loader_virtual_addresses();
+    log::debug!("Loader virtual addresses fixed");
     elf.generate_file_info_section(is_rpl);
+    log::debug!("File info section generated");
     elf.generate_crc_section();
+    log::debug!("CRC section generated");
     elf.fix_file_header();
+    log::debug!("File header fixed");
     elf.deflate_sections();
+    log::debug!("Sections deflated");
     elf.calculate_section_offsets();
+    log::debug!("Section offsets calculated");
     elf.write(output);
+    log::info!("RPL file written successfully");
 }

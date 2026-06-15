@@ -1,8 +1,15 @@
+//! cargo wiiu
+//!
+//! Note
+//!
+//! unwrap() must be used in places that can not be fixed by the user (e.g. Cursor::write on a Vec). Result::context() by anyhow should be used in places where the user can fix the error (e.g. reading missing file).
+
 mod elf;
 mod rpl;
 mod upload;
 mod wuhb;
 
+use anyhow::Context;
 use clap::{Parser, Subcommand};
 use std::{fs, net::Ipv4Addr, path::PathBuf};
 
@@ -80,7 +87,9 @@ enum Commands {
     },
 }
 
-fn main() {
+fn main() -> anyhow::Result<()> {
+    env_logger::init();
+
     let args = Args::parse();
 
     match &args.command {
@@ -91,9 +100,10 @@ fn main() {
             println!("cargo wiiu run {cemu:?}");
         }
         Commands::Upload { binary, ip } => {
-            let data = fs::read(binary).unwrap();
-
-            upload::upload_binary(data, &binary, *ip);
+            log::info!("Read input file");
+            let data =
+                fs::read(binary).context(format!("Failed to read file: {}", binary.display()))?;
+            upload::upload_binary(data, *ip)?;
         }
         Commands::Rpx { elf, rpx } => {
             let rpx = rpx.clone().unwrap_or_else(|| elf.with_extension("rpx"));
@@ -109,14 +119,22 @@ fn main() {
                 .unwrap_or_else(|| binary.with_extension("wuhb"));
 
             let rpx = match binary.extension().unwrap().to_str().unwrap() {
-                "rpx" => fs::read(binary).unwrap(),
+                "rpx" => {
+                    log::info!("Read input file");
+                    fs::read(binary)
+                        .context(format!("Failed to read file: {}", binary.display()))?
+                }
                 "elf" => todo!("Indirect conversion: elf -> rpx -> wuhb"),
                 e => panic!("Unsupported main executable: {e}"),
             };
 
-            let content = wuhb::from_rpx(rpx, "Test App");
+            let content = wuhb::from_rpx(rpx, "Test App")?;
 
-            fs::write(wuhb, content).unwrap();
+            log::info!("Write output file");
+            fs::write(&wuhb, content)
+                .context(format!("Failed to write file: {}", wuhb.display()))?;
         }
     }
+
+    Ok(())
 }

@@ -400,7 +400,7 @@ impl RomFs {
     }
 }
 
-pub fn from_rpx(rpx: Vec<u8>, name: &str) -> Vec<u8> {
+pub fn from_rpx(rpx: Vec<u8>, name: &str) -> anyhow::Result<Vec<u8>> {
     let mut fs = RomFs::new();
 
     let code = fs.add_folder(fs.root, "code");
@@ -425,9 +425,14 @@ pub fn from_rpx(rpx: Vec<u8>, name: &str) -> Vec<u8> {
         .into_bytes(),
     );
 
+    log::info!("RomFS created");
+
     fs.calculate_folder_metadata();
+    log::debug!("Folder metadata calculated");
     fs.calculate_file_metadata();
+    log::debug!("File metadata calculated");
     let (dir_hash_table, file_hash_table) = fs.calculate_hash_tables();
+    log::debug!("Hash tables calculated");
 
     let mut cursor = Cursor::new(Vec::new());
 
@@ -444,11 +449,13 @@ pub fn from_rpx(rpx: Vec<u8>, name: &str) -> Vec<u8> {
         );
         cursor.set_position(cursor.position().next_multiple_of(4));
     }
+    log::debug!("File partition written");
 
     // Directory hash table
     header.dir_hash_table_ofs = cursor.position();
     dir_hash_table.write(&mut cursor).unwrap();
     header.dir_hash_table_size = dir_hash_table.bytes();
+    log::debug!("Directory hash table written");
 
     // Directory entry table
     header.dir_table_ofs = cursor.position();
@@ -471,11 +478,13 @@ pub fn from_rpx(rpx: Vec<u8>, name: &str) -> Vec<u8> {
         .unwrap();
     }
     header.dir_table_size = cursor.position() - header.dir_table_ofs;
+    log::debug!("Directory table written");
 
     // File hash table
     header.file_hash_table_ofs = cursor.position();
     file_hash_table.write(&mut cursor).unwrap();
     header.file_hash_table_size = file_hash_table.bytes();
+    log::debug!("File hash table written");
 
     // File entry table
     header.file_table_ofs = cursor.position();
@@ -484,12 +493,14 @@ pub fn from_rpx(rpx: Vec<u8>, name: &str) -> Vec<u8> {
         file.meta.write(&mut cursor).unwrap();
     }
     header.file_table_size = cursor.position() - header.file_table_ofs;
+    log::debug!("File table written");
 
     // File header
     cursor.set_position(0);
     header.write(&mut cursor).unwrap();
+    log::debug!("File header written");
 
-    cursor.into_inner()
+    Ok(cursor.into_inner())
 }
 
 #[cfg(test)]
@@ -504,7 +515,7 @@ mod tests {
         let rpx = fs::read(format!("./tests/dkp/rpx/{filename}.rpx")).unwrap();
         let wuhb = fs::read(format!("./tests/dkp/wuhb/{filename}.wuhb")).unwrap();
 
-        let converted = super::from_rpx(rpx, filename);
+        let converted = super::from_rpx(rpx, filename).unwrap();
 
         assert_eq!(converted, wuhb);
     }
