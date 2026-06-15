@@ -81,7 +81,7 @@ fn main() {
                 e => panic!("Unsupported main executable: {e}"),
             };
 
-            let content = wuhb::from_rpx(rpx);
+            let content = wuhb::from_rpx(rpx, "Test App");
 
             fs::write(wuhb, content).unwrap();
         }

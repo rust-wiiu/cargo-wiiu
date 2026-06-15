@@ -5,18 +5,18 @@ use std::io::{Cursor, Write};
 #[binrw]
 #[brw(big)]
 #[derive(Debug, Clone)]
-pub struct RomFsHeader {
-    pub magic: [u8; 4],
-    pub size: u32,
-    pub dir_hash_table_ofs: u64,
-    pub dir_hash_table_size: u64,
-    pub dir_table_ofs: u64,
-    pub dir_table_size: u64,
-    pub file_hash_table_ofs: u64,
-    pub file_hash_table_size: u64,
-    pub file_table_ofs: u64,
-    pub file_table_size: u64,
-    pub file_partition_ofs: u64,
+struct RomFsHeader {
+    magic: [u8; 4],
+    size: u32,
+    dir_hash_table_ofs: u64,
+    dir_hash_table_size: u64,
+    dir_table_ofs: u64,
+    dir_table_size: u64,
+    file_hash_table_ofs: u64,
+    file_hash_table_size: u64,
+    file_table_ofs: u64,
+    file_table_size: u64,
+    file_partition_ofs: u64,
 }
 
 impl Default for RomFsHeader {
@@ -40,23 +40,23 @@ impl Default for RomFsHeader {
 #[binrw]
 #[brw(big)]
 #[derive(Debug, Clone)]
-pub struct RomFsDirEntry {
+struct RomFsDirEntry {
     /// Offset of parent into directory table
-    pub parent: u32,
+    parent: u32,
     /// Next folder with the same parent
-    pub sibling: u32,
+    sibling: u32,
     /// Offset into directory table of next folder in self
-    pub child: u32,
+    child: u32,
     /// Offset into file table of next file in self
-    pub file: u32,
+    file: u32,
     /// Offset into folder table of next folder in hash collision list
-    pub hash: u32,
+    hash: u32,
     /// Number of bytes of folder name
-    pub name_size: u32,
+    name_size: u32,
     /// Folder name
     #[br(count = name_size, try_map = String::from_utf8)]
     #[bw(map = |s| s.as_bytes())]
-    pub name: String,
+    name: String,
 }
 
 impl Default for RomFsDirEntry {
@@ -74,9 +74,9 @@ impl Default for RomFsDirEntry {
 }
 
 impl RomFsDirEntry {
-    pub const SIZE: u64 = 0x18;
+    const SIZE: u64 = 0x18;
 
-    pub fn bytes(&self) -> u64 {
+    fn bytes(&self) -> u64 {
         Self::SIZE + self.name_size as u64
     }
 }
@@ -84,23 +84,23 @@ impl RomFsDirEntry {
 #[binrw]
 #[brw(big)]
 #[derive(Debug, Clone)]
-pub struct RomFsFileEntry {
+struct RomFsFileEntry {
     /// Offset of parent into directory table
-    pub parent: u32,
+    parent: u32,
     /// Offset into file table of next file in parent folder
-    pub sibling: u32,
+    sibling: u32,
     /// Offset of content into partition
-    pub offset: u64,
+    offset: u64,
     /// Size of content in partition
-    pub size: u64,
+    size: u64,
     /// Offset into file table of next file in hash collision list
-    pub hash: u32,
+    hash: u32,
     /// Number of bytes of file name
-    pub name_size: u32,
+    name_size: u32,
     /// File name
     #[br(count = name_size, try_map = String::from_utf8)]
     #[bw(map = |s| s.as_bytes())]
-    pub name: String,
+    name: String,
 }
 
 impl Default for RomFsFileEntry {
@@ -118,9 +118,9 @@ impl Default for RomFsFileEntry {
 }
 
 impl RomFsFileEntry {
-    pub const SIZE: u64 = 0x20;
+    const SIZE: u64 = 0x20;
 
-    pub fn bytes(&self) -> u64 {
+    fn bytes(&self) -> u64 {
         Self::SIZE + self.name_size as u64
     }
 }
@@ -129,10 +129,10 @@ impl RomFsFileEntry {
 #[brw(big)]
 #[br(import(len: usize))]
 #[derive(Debug, Clone)]
-pub struct HashTable(#[br(count = len)] pub Vec<u32>);
+struct HashTable(#[br(count = len)] Vec<u32>);
 
 impl HashTable {
-    pub fn new(expected_entries: usize) -> Self {
+    fn new(expected_entries: usize) -> Self {
         Self(vec![
             NONE;
             match expected_entries {
@@ -151,7 +151,7 @@ impl HashTable {
         ])
     }
 
-    pub fn hash(&mut self, parent_offset: u32, name: &str, current_offset: u32) -> u32 {
+    fn hash(&mut self, parent_offset: u32, name: &str, current_offset: u32) -> u32 {
         let mut hash = parent_offset ^ 123456789;
         for c in name.chars() {
             hash = (hash >> 5) | (hash << 27);
@@ -166,20 +166,20 @@ impl HashTable {
         prev
     }
 
-    pub fn bytes(&self) -> u64 {
+    fn bytes(&self) -> u64 {
         self.0.len() as u64 * 4
     }
 }
 
 #[derive(Clone, Debug)]
-pub struct Folder {
+struct Folder {
     name: String,
     meta: RomFsDirEntry,
     offset: u32,
 }
 
 #[derive(Clone, Debug)]
-pub struct File {
+struct File {
     name: String,
     content: Vec<u8>,
     meta: RomFsFileEntry,
@@ -187,20 +187,20 @@ pub struct File {
 }
 
 #[derive(Clone, Debug)]
-pub enum Entry {
+enum Entry {
     Folder(Folder),
     File(File),
 }
 
 const NONE: u32 = u32::MAX;
 
-pub struct RomFs {
-    pub arena: Arena<Entry>,
-    pub root: NodeId,
+struct RomFs {
+    arena: Arena<Entry>,
+    root: NodeId,
 }
 
 impl RomFs {
-    pub fn new() -> Self {
+    fn new() -> Self {
         let mut arena = Arena::new();
         let root = arena.new_node(Entry::Folder(Folder {
             name: String::new(),
@@ -211,7 +211,7 @@ impl RomFs {
         Self { arena, root: root }
     }
 
-    pub fn add_folder(&mut self, folder: NodeId, name: &str) -> NodeId {
+    fn add_folder(&mut self, folder: NodeId, name: &str) -> NodeId {
         let node_id = folder.append_value(
             Entry::Folder(Folder {
                 name: String::from(name),
@@ -223,7 +223,7 @@ impl RomFs {
         node_id
     }
 
-    pub fn add_file(&mut self, folder: NodeId, name: &str, content: Vec<u8>) -> NodeId {
+    fn add_file(&mut self, folder: NodeId, name: &str, content: Vec<u8>) -> NodeId {
         let node_id = folder.append_value(
             Entry::File(File {
                 name: String::from(name),
@@ -236,7 +236,7 @@ impl RomFs {
         node_id
     }
 
-    pub fn folders(&mut self) -> impl Iterator<Item = (NodeId, &Folder)> {
+    fn folders(&mut self) -> impl Iterator<Item = (NodeId, &Folder)> {
         self.root
             .descendants(&self.arena)
             .filter_map(|node_id| match self.arena[node_id].get() {
@@ -245,7 +245,7 @@ impl RomFs {
             })
     }
 
-    pub fn files(&self) -> impl Iterator<Item = (NodeId, &File)> {
+    fn files(&self) -> impl Iterator<Item = (NodeId, &File)> {
         self.root
             .descendants(&self.arena)
             .filter_map(|node_id| match self.arena[node_id].get() {
@@ -254,7 +254,7 @@ impl RomFs {
             })
     }
 
-    pub fn calculate_folder_metadata(&mut self) {
+    fn calculate_folder_metadata(&mut self) {
         let folder_ids: Vec<NodeId> = self
             .root
             .descendants(&self.arena)
@@ -303,7 +303,7 @@ impl RomFs {
         }
     }
 
-    pub fn calculate_file_metadata(&mut self) {
+    fn calculate_file_metadata(&mut self) {
         let file_ids: Vec<NodeId> = self
             .root
             .descendants(&self.arena)
@@ -352,7 +352,7 @@ impl RomFs {
         }
     }
 
-    pub fn calculate_hash_tables(&mut self) -> (HashTable, HashTable) {
+    fn calculate_hash_tables(&mut self) -> (HashTable, HashTable) {
         let mut dirs = HashTable::new(self.folders().count() + 1);
         let mut files = HashTable::new(self.files().count());
 
@@ -400,13 +400,11 @@ impl RomFs {
     }
 }
 
-pub fn from_rpx(rpx: Vec<u8>) -> Vec<u8> {
+pub fn from_rpx(rpx: Vec<u8>, name: &str) -> Vec<u8> {
     let mut fs = RomFs::new();
 
     let code = fs.add_folder(fs.root, "code");
     let meta = fs.add_folder(fs.root, "meta");
-
-    // fs.add_folder(code, "test");
 
     fs.add_file(code, "root.rpx", rpx);
 
@@ -414,9 +412,9 @@ pub fn from_rpx(rpx: Vec<u8>) -> Vec<u8> {
         meta,
         "meta.ini",
         format!(
-            "[menu]\nlongname={}\nshortname={}\nauthor={}",
-            "Test App",
-            "Test App",
+            "[menu]\nlongname={}\nshortname={}\nauthor={}\n",
+            name,
+            name,
             if cfg!(test) {
                 // Insert the string used by wuhbtool to allow for byte comparison
                 "Built with devkitPPC & wut"
@@ -431,51 +429,55 @@ pub fn from_rpx(rpx: Vec<u8>) -> Vec<u8> {
     fs.calculate_file_metadata();
     let (dir_hash_table, file_hash_table) = fs.calculate_hash_tables();
 
-    for (_, f) in fs.folders() {
-        println!("{:#X?}", f.meta);
-    }
-
-    for (_, f) in fs.files() {
-        println!("{:#X?}", f.meta);
-    }
-
     let mut cursor = Cursor::new(Vec::new());
 
     let mut header = RomFsHeader::default();
 
+    // File content / partition
     for (_, file) in fs.files() {
-        cursor.set_position(header.file_partition_ofs + file.meta.offset);
+        cursor.set_position((header.file_partition_ofs + file.meta.offset).next_multiple_of(16));
+
         cursor.write(&file.content).unwrap();
         assert_eq!(
             cursor.position(),
             header.file_partition_ofs + file.meta.offset + file.meta.size
         );
-        cursor.set_position(cursor.position().next_multiple_of(16));
+        cursor.set_position(cursor.position().next_multiple_of(4));
     }
 
-    {
-        header.dir_hash_table_ofs = cursor.position();
-        // skip
-        // cursor.seek_relative(0x14).unwrap();
-        dir_hash_table.write(&mut cursor).unwrap();
-        // skip
-        header.dir_hash_table_size = dir_hash_table.bytes();
-    }
+    // Directory hash table
+    header.dir_hash_table_ofs = cursor.position();
+    dir_hash_table.write(&mut cursor).unwrap();
+    header.dir_hash_table_size = dir_hash_table.bytes();
 
+    // Directory entry table
     header.dir_table_ofs = cursor.position();
     for (_, folder) in fs.folders() {
         cursor.set_position(header.dir_table_ofs + folder.offset as u64);
         folder.meta.write(&mut cursor).unwrap();
     }
+    // wuhbtools adds an empty entry for some reason
+    {
+        RomFsDirEntry {
+            parent: 0,
+            sibling: 0,
+            child: 0,
+            file: 0,
+            hash: 0,
+            name_size: 0,
+            name: String::new(),
+        }
+        .write(&mut cursor)
+        .unwrap();
+    }
     header.dir_table_size = cursor.position() - header.dir_table_ofs;
 
+    // File hash table
     header.file_hash_table_ofs = cursor.position();
-    // skip
-    // cursor.seek_relative(0xC).unwrap();
     file_hash_table.write(&mut cursor).unwrap();
-    // skip
     header.file_hash_table_size = file_hash_table.bytes();
 
+    // File entry table
     header.file_table_ofs = cursor.position();
     for (_, file) in fs.files() {
         cursor.set_position(header.file_table_ofs + file.offset as u64);
@@ -483,10 +485,27 @@ pub fn from_rpx(rpx: Vec<u8>) -> Vec<u8> {
     }
     header.file_table_size = cursor.position() - header.file_table_ofs;
 
-    println!("{header:#X?}");
-
+    // File header
     cursor.set_position(0);
     header.write(&mut cursor).unwrap();
 
     cursor.into_inner()
+}
+
+#[cfg(test)]
+mod tests {
+    use rstest::rstest;
+    use std::{fs, path::PathBuf};
+
+    #[rstest]
+    fn from_rpx(#[files("tests/dkp/wuhb/*.wuhb")] path: PathBuf) {
+        let filename = path.file_stem().unwrap().to_str().unwrap();
+
+        let rpx = fs::read(format!("./tests/dkp/rpx/{filename}.rpx")).unwrap();
+        let wuhb = fs::read(format!("./tests/dkp/wuhb/{filename}.wuhb")).unwrap();
+
+        let converted = super::from_rpx(rpx, filename);
+
+        assert_eq!(converted, wuhb);
+    }
 }
