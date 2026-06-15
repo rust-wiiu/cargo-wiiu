@@ -1,8 +1,9 @@
 mod elf;
 mod elf2rpl;
+mod wuhb;
 
 use clap::{Parser, Subcommand};
-use std::path::PathBuf;
+use std::{fs, path::PathBuf};
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
@@ -40,6 +41,12 @@ enum Commands {
         /// Path to the resulting rpl binary. Defaults to elf path with ".rpl" extension.
         rpl: Option<PathBuf>,
     },
+    Wuhb {
+        /// Path to the binary (elf / rpx)
+        binary: PathBuf,
+        /// Path to the resulting WUHB archive. Defaults to binary path with ".wuhb" extension.
+        wuhb: Option<PathBuf>,
+    },
 }
 
 fn main() {
@@ -62,6 +69,14 @@ fn main() {
         Commands::Rpl { elf, rpl } => {
             let rpl = rpl.clone().unwrap_or_else(|| elf.with_extension("rpl"));
             elf2rpl::convert(elf, rpl, true);
+        }
+        Commands::Wuhb { binary, wuhb } => {
+            let wuhb = wuhb
+                .clone()
+                .unwrap_or_else(|| binary.with_extension("wuhb"));
+
+            let content = wuhb::from_rpx(binary, &wuhb);
+            fs::write(wuhb, content).unwrap();
         }
     }
 }

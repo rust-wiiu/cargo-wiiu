@@ -1,5 +1,3 @@
 /target
-*.elf
-*.rpx
-*.rpl
-*.wuhb
+tests/example_app
+*.hexproj
