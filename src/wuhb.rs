@@ -1,10 +1,6 @@
-use binrw::{BinRead, BinWrite, binrw};
-use indextree::{Arena, Node, NodeId};
-use std::{
-    fs,
-    io::{Cursor, Seek, Write},
-    path::Path,
-};
+use binrw::{BinWrite, binrw};
+use indextree::{Arena, NodeId};
+use std::io::{Cursor, Write};
 
 #[binrw]
 #[brw(big)]
@@ -129,118 +125,6 @@ impl RomFsFileEntry {
     }
 }
 
-pub fn test(path: impl AsRef<Path>) {
-    let file = fs::read(path.as_ref()).unwrap();
-
-    let mut cursor = Cursor::new(&file);
-
-    let header = RomFsHeader::read(&mut cursor).unwrap();
-
-    println!("{:#X?}", header);
-
-    let mut dirs = Vec::new();
-    let mut size = header.dir_table_size;
-    cursor.set_position(header.dir_table_ofs);
-    while size > 0 {
-        let dir = RomFsDirEntry::read(&mut cursor).unwrap();
-        size -= dir.bytes();
-        dirs.push(dir);
-    }
-    assert_eq!(size, 0);
-
-    println!("{:X?}", dirs);
-
-    let mut files = Vec::new();
-    let mut size = header.file_table_size;
-    cursor.set_position(header.file_table_ofs);
-    while size > 0 {
-        let file = RomFsFileEntry::read(&mut cursor).unwrap();
-        size -= file.bytes();
-        files.push(file);
-    }
-    assert_eq!(size, 0);
-
-    println!("{:X?}", files);
-}
-
-pub fn convert2(rpx: impl AsRef<Path>, wuhb: impl AsRef<Path>) {
-    let mut header = RomFsHeader {
-        magic: *b"WUHB",
-        size: 0x50,
-        dir_hash_table_ofs: 0,
-        dir_hash_table_size: 0,
-        dir_table_ofs: 0,
-        dir_table_size: 0,
-        file_hash_table_ofs: 0,
-        file_hash_table_size: 0,
-        file_table_ofs: 0,
-        file_table_size: 0,
-        file_partition_ofs: 0x200,
-    };
-
-    let root = RomFsDirEntry {
-        parent: 0,
-        sibling: NONE,
-        child: RomFsDirEntry::SIZE as u32,
-        file: NONE,
-        hash: NONE,
-        name_size: 0,
-        name: String::new(),
-    };
-
-    let mut code = RomFsDirEntry {
-        parent: 0,
-        sibling: RomFsDirEntry::SIZE as u32 + 4,
-        child: NONE,
-        file: 0,
-        hash: 0,
-        name_size: 4,
-        name: String::from("code"),
-    };
-
-    let mut meta = RomFsDirEntry {
-        parent: 0,
-        sibling: NONE,
-        child: NONE,
-        file: 0,
-        hash: NONE,
-        name_size: 4,
-        name: String::from("meta"),
-    };
-
-    let mut root_rpx = RomFsFileEntry {
-        parent: 0,
-        sibling: NONE,
-        offset: 0,
-        size: 0,
-        hash: NONE,
-        name_size: 8,
-        name: String::from("root.rpx"),
-    };
-
-    let mut meta_ini = RomFsFileEntry {
-        parent: 0,
-        sibling: NONE,
-        offset: 0,
-        size: 0,
-        hash: 0,
-        name_size: 8,
-        name: String::from("meta.ini"),
-    };
-
-    let mut output = Vec::new();
-    let mut cursor = Cursor::new(&mut output);
-
-    header.write(&mut cursor).unwrap();
-
-    cursor.set_position(header.file_partition_ofs);
-
-    root_rpx.offset = cursor.position() - header.file_partition_ofs; // should be zero
-
-    let data = fs::read(rpx.as_ref()).unwrap();
-    root_rpx.size = data.len() as u64;
-}
-
 #[binrw]
 #[brw(big)]
 #[br(import(len: usize))]
@@ -257,7 +141,7 @@ impl HashTable {
                 mut count => {
                     let small_primes = [2, 3, 5, 7, 11, 13, 17];
 
-                    while small_primes.iter().any(|&p| count & p == 0) {
+                    while small_primes.iter().any(|&p| count % p == 0) {
                         count += 1;
                     }
 
@@ -267,14 +151,19 @@ impl HashTable {
         ])
     }
 
-    pub fn insert(&mut self, parent_offset: u32, name: &str, entry_offset: u32) {
+    pub fn hash(&mut self, parent_offset: u32, name: &str, current_offset: u32) -> u32 {
         let mut hash = parent_offset ^ 123456789;
         for c in name.chars() {
             hash = (hash >> 5) | (hash << 27);
-            hash ^= c.to_ascii_lowercase() as u32;
+            hash ^= c.to_ascii_uppercase() as u32;
         }
-        let len = self.0.len();
-        self.0[hash as usize % len] = entry_offset;
+
+        let bucket = (hash as usize) % self.0.len();
+
+        let prev = self.0[bucket];
+        self.0[bucket] = current_offset;
+
+        prev
     }
 
     pub fn bytes(&self) -> u64 {
@@ -283,14 +172,14 @@ impl HashTable {
 }
 
 #[derive(Clone, Debug)]
-struct Folder {
+pub struct Folder {
     name: String,
     meta: RomFsDirEntry,
     offset: u32,
 }
 
 #[derive(Clone, Debug)]
-struct File {
+pub struct File {
     name: String,
     content: Vec<u8>,
     meta: RomFsFileEntry,
@@ -426,7 +315,7 @@ impl RomFs {
 
         for id in file_ids {
             let parent_id = id.parent(&self.arena).unwrap_or(self.root);
-            let sibling_id = id.preceding_siblings(&self.arena).nth(1);
+            // let sibling_id = id.preceding_siblings(&self.arena).nth(1);
 
             let (parent, sibling) = match self.arena[parent_id].get_mut() {
                 Entry::Folder(f) => {
@@ -462,9 +351,56 @@ impl RomFs {
             }
         }
     }
+
+    pub fn calculate_hash_tables(&mut self) -> (HashTable, HashTable) {
+        let mut dirs = HashTable::new(self.folders().count() + 1);
+        let mut files = HashTable::new(self.files().count());
+
+        {
+            let folder_ids: Vec<NodeId> = self.folders().map(|x| x.0).collect();
+
+            for id in folder_ids {
+                let (parent_offset, name, current_offset) = match self.arena[id].get() {
+                    Entry::Folder(f) => (f.meta.parent, f.name.clone(), f.offset),
+                    _ => unreachable!(),
+                };
+
+                let next = dirs.hash(parent_offset, &name, current_offset);
+
+                match self.arena[id].get_mut() {
+                    Entry::Folder(f) => {
+                        f.meta.hash = next;
+                    }
+                    _ => unreachable!(),
+                }
+            }
+
+            {
+                let file_ids: Vec<NodeId> = self.files().map(|x| x.0).collect();
+
+                for id in file_ids {
+                    let (parent_offset, name, current_offset) = match self.arena[id].get() {
+                        Entry::File(f) => (f.meta.parent, f.name.clone(), f.offset),
+                        _ => unreachable!(),
+                    };
+
+                    let next = files.hash(parent_offset, &name, current_offset);
+
+                    match self.arena[id].get_mut() {
+                        Entry::File(f) => {
+                            f.meta.hash = next;
+                        }
+                        _ => unreachable!(),
+                    }
+                }
+            }
+        }
+
+        (dirs, files)
+    }
 }
 
-pub fn from_rpx(rpx: impl AsRef<Path>, wuhb: impl AsRef<Path>) -> Vec<u8> {
+pub fn from_rpx(rpx: Vec<u8>) -> Vec<u8> {
     let mut fs = RomFs::new();
 
     let code = fs.add_folder(fs.root, "code");
@@ -472,20 +408,28 @@ pub fn from_rpx(rpx: impl AsRef<Path>, wuhb: impl AsRef<Path>) -> Vec<u8> {
 
     // fs.add_folder(code, "test");
 
-    fs.add_file(code, "root.rpx", fs::read(rpx.as_ref()).unwrap());
+    fs.add_file(code, "root.rpx", rpx);
 
     fs.add_file(
         meta,
         "meta.ini",
         format!(
             "[menu]\nlongname={}\nshortname={}\nauthor={}",
-            "Test App", "Test App", "29th-Day"
+            "Test App",
+            "Test App",
+            if cfg!(test) {
+                // Insert the string used by wuhbtool to allow for byte comparison
+                "Built with devkitPPC & wut"
+            } else {
+                env!("CARGO_PKG_AUTHORS")
+            }
         )
         .into_bytes(),
     );
 
     fs.calculate_folder_metadata();
     fs.calculate_file_metadata();
+    let (dir_hash_table, file_hash_table) = fs.calculate_hash_tables();
 
     for (_, f) in fs.folders() {
         println!("{:#X?}", f.meta);
@@ -512,9 +456,10 @@ pub fn from_rpx(rpx: impl AsRef<Path>, wuhb: impl AsRef<Path>) -> Vec<u8> {
     {
         header.dir_hash_table_ofs = cursor.position();
         // skip
-        cursor.seek_relative(0x14).unwrap();
+        // cursor.seek_relative(0x14).unwrap();
+        dir_hash_table.write(&mut cursor).unwrap();
         // skip
-        header.dir_hash_table_size = 0x14;
+        header.dir_hash_table_size = dir_hash_table.bytes();
     }
 
     header.dir_table_ofs = cursor.position();
@@ -526,9 +471,10 @@ pub fn from_rpx(rpx: impl AsRef<Path>, wuhb: impl AsRef<Path>) -> Vec<u8> {
 
     header.file_hash_table_ofs = cursor.position();
     // skip
-    cursor.seek_relative(0xC).unwrap();
+    // cursor.seek_relative(0xC).unwrap();
+    file_hash_table.write(&mut cursor).unwrap();
     // skip
-    header.file_hash_table_size = 0xC;
+    header.file_hash_table_size = file_hash_table.bytes();
 
     header.file_table_ofs = cursor.position();
     for (_, file) in fs.files() {

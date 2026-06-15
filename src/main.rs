@@ -75,7 +75,14 @@ fn main() {
                 .clone()
                 .unwrap_or_else(|| binary.with_extension("wuhb"));
 
-            let content = wuhb::from_rpx(binary, &wuhb);
+            let rpx = match binary.extension().unwrap().to_str().unwrap() {
+                "rpx" => fs::read(binary).unwrap(),
+                "elf" => todo!("Indirect conversion: elf -> rpx -> wuhb"),
+                e => panic!("Unsupported main executable: {e}"),
+            };
+
+            let content = wuhb::from_rpx(rpx);
+
             fs::write(wuhb, content).unwrap();
         }
     }
