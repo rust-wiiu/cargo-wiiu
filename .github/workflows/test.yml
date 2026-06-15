@@ -2,9 +2,9 @@ name: Automatic tests
 
 on:
   push:
-    branches: [ main ]
+    branches: [main]
   pull_request:
-    branches: [ main ]
+    branches: [main]
 
 env:
   CARGO_TERM_COLOR: always
@@ -15,5 +15,7 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+      - name: Build tests
+        run: cargo test --no-run
       - name: Run tests
-        run: cargo test --verbose
+        run: cargo test -- --no-capture
