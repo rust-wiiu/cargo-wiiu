@@ -1,9 +1,10 @@
 mod elf;
 mod rpl;
+mod upload;
 mod wuhb;
 
 use clap::{Parser, Subcommand};
-use std::{fs, path::PathBuf};
+use std::{fs, net::Ipv4Addr, path::PathBuf};
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
@@ -43,7 +44,14 @@ enum Commands {
         cemu: Option<PathBuf>,
     },
     /// Upload
-    Upload { wiiload: Option<PathBuf> },
+    Upload {
+        /// Binary to upload
+        #[arg(value_parser = extension(["rpx", "wuhb"]))]
+        binary: PathBuf,
+        /// IP address of the console
+        #[arg(long)]
+        ip: Ipv4Addr,
+    },
     /// Convert ELF to RPX (executable)
     Rpx {
         /// Path to the elf binary
@@ -82,8 +90,10 @@ fn main() {
         Commands::Run { cemu } => {
             println!("cargo wiiu run {cemu:?}");
         }
-        Commands::Upload { wiiload } => {
-            println!("cargo wiiu upload {wiiload:?}");
+        Commands::Upload { binary, ip } => {
+            let data = fs::read(binary).unwrap();
+
+            upload::upload_binary(data, &binary, *ip);
         }
         Commands::Rpx { elf, rpx } => {
             let rpx = rpx.clone().unwrap_or_else(|| elf.with_extension("rpx"));
