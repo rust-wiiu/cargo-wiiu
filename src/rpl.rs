@@ -3,9 +3,7 @@ use binrw::{BinRead, BinWrite};
 use flate2::{Crc, write::ZlibEncoder};
 use std::{
     ffi::CStr,
-    fs,
     io::{Cursor, Write},
-    path::Path,
     usize,
 };
 
@@ -93,10 +91,8 @@ impl ElfFile {
 
     const DEFLATE_MIN_SECTION_SIZE: usize = 0x18;
 
-    fn read(path: impl AsRef<Path>) -> Self {
-        let file = fs::read(path.as_ref()).unwrap();
-
-        let mut cursor = Cursor::new(&file);
+    fn read(data: Vec<u8>) -> Self {
+        let mut cursor = Cursor::new(&data);
 
         let header = elf::Header::read(&mut cursor).unwrap();
 
@@ -130,11 +126,6 @@ impl ElfFile {
         for _ in 0..header.shnum {
             let mut section_header = elf::SectionHeader::read(&mut cursor).unwrap();
 
-            // if section_header.size == 0 || section_header.ty == elf::SectionType::NOBITS {
-            //     println!("discarded");
-            //     continue;
-            // }
-
             if section_header.addr >= Self::DATA_BASE_ADDRESS
                 && section_header.addr < Self::LOAD_BASE_ADDRESS
             {
@@ -146,7 +137,7 @@ impl ElfFile {
 
             sections.push(Section {
                 header: section_header,
-                data: SectionData(file[start..end].to_vec()),
+                data: SectionData(data[start..end].to_vec()),
                 name: String::new(),
                 index: 0,
             });
@@ -569,11 +560,6 @@ impl ElfFile {
                 section.header.offset = offset;
                 section.header.size = section.data.len() as u32;
                 offset += section.header.size;
-
-                println!(
-                    "{} {:#X} {:#X} {:?}",
-                    section.name, section.header.offset, section.header.size, section.header.flags
-                );
             }
         }
 
@@ -582,11 +568,6 @@ impl ElfFile {
                 section.header.offset = offset;
                 section.header.size = section.data.len() as u32;
                 offset += section.header.size;
-
-                println!(
-                    "{} {:#X} {:#X} {:?}",
-                    section.name, section.header.offset, section.header.size, section.header.flags
-                );
             }
         }
 
@@ -695,7 +676,7 @@ impl ElfFile {
         }
     }
 
-    fn write(&self, path: impl AsRef<Path>) {
+    fn write(&self) -> Vec<u8> {
         let shoff = self.header.shoff;
 
         let mut cursor = Cursor::new(Vec::new());
@@ -717,11 +698,11 @@ impl ElfFile {
             }
         }
 
-        fs::write(path.as_ref(), cursor.into_inner()).unwrap();
+        cursor.into_inner()
     }
 }
 
-pub fn from_elf(input: impl AsRef<Path>, output: impl AsRef<Path>, is_rpl: bool) {
+pub fn from_elf(input: Vec<u8>, is_rpl: bool) -> Vec<u8> {
     let mut elf = ElfFile::read(input);
     log::info!("Elf file parsed successfully");
     elf.fix_section_flags();
@@ -742,6 +723,7 @@ pub fn from_elf(input: impl AsRef<Path>, output: impl AsRef<Path>, is_rpl: bool)
     log::debug!("Sections deflated");
     elf.calculate_section_offsets();
     log::debug!("Section offsets calculated");
-    elf.write(output);
+    let output = elf.write();
     log::info!("RPL file written successfully");
+    output
 }

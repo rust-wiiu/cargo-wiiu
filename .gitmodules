@@ -1,0 +1,3 @@
+[submodule ".cafe"]
+	path = .cafe
+	url = https://github.com/rust-wiiu/cafe-target-spec

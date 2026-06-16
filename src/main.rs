@@ -11,7 +11,12 @@ mod wuhb;
 
 use anyhow::Context;
 use clap::{Args, Parser, Subcommand};
-use std::{fs, net::Ipv4Addr, path::PathBuf};
+use std::{
+    fs,
+    net::Ipv4Addr,
+    path::{Path, PathBuf},
+    process::Command,
+};
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
@@ -153,16 +158,15 @@ impl WuhbConfig {
 #[derive(Subcommand)]
 enum Commands {
     /// Build
-    #[command(trailing_var_arg = true)]
+    #[command(trailing_var_arg = true, allow_hyphen_values = true)]
     Build {
         /// Arguments given directly to `cargo build`
         cargo_args: Vec<String>,
     },
-    /// Run application on emulator
-    Run {
-        /// Path to Cemu.
-        cemu: Option<PathBuf>,
-    },
+    /// Create a new project. Alias for `cargo new foo && cd foo && cargo wiiu init`.
+    New { path: PathBuf },
+    /// Initializes an existing project
+    Init { path: PathBuf },
     /// Upload
     Upload {
         /// Binary to upload
@@ -204,17 +208,23 @@ enum Commands {
 }
 
 fn main() -> anyhow::Result<()> {
-    env_logger::init();
+    env_logger::Builder::default()
+        .format_timestamp(None)
+        .format_module_path(false)
+        .format_target(false)
+        .init();
 
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Build { cargo_args: args } => {
-            println!("cargo wiiu build {args:?}");
+        Commands::Build { cargo_args } => {
+            build(&cargo_args)?;
         }
-        Commands::Run { cemu } => {
-            println!("cargo wiiu run {cemu:?}");
+        Commands::New { path } => {
+            new(&path)?;
+            init(&path)?;
         }
+        Commands::Init { path } => init(&path)?,
         Commands::Upload { binary, ip } => {
             log::info!("Read input file");
             let data =
@@ -223,11 +233,27 @@ fn main() -> anyhow::Result<()> {
         }
         Commands::Rpx { elf, rpx } => {
             let rpx = rpx.unwrap_or_else(|| elf.with_extension("rpx"));
-            rpl::from_elf(elf, rpx, false);
+
+            log::info!("Read input file");
+            let input =
+                fs::read(&elf).context(format!("Failed to read file: {}", elf.display()))?;
+
+            let output = rpl::from_elf(input, false);
+
+            log::info!("Write output file");
+            fs::write(&rpx, output).context(format!("Failed to write file: {}", rpx.display()))?;
         }
         Commands::Rpl { elf, rpl } => {
             let rpl = rpl.unwrap_or_else(|| elf.with_extension("rpl"));
-            rpl::from_elf(elf, rpl, true);
+
+            log::info!("Read input file");
+            let input =
+                fs::read(&elf).context(format!("Failed to read file: {}", elf.display()))?;
+
+            let output = rpl::from_elf(input, true);
+
+            log::info!("Write output file");
+            fs::write(&rpl, output).context(format!("Failed to write file: {}", rpl.display()))?;
         }
         Commands::Wuhb {
             rpx,
@@ -237,17 +263,149 @@ fn main() -> anyhow::Result<()> {
             let wuhb = wuhb.unwrap_or_else(|| rpx.with_extension("wuhb"));
 
             log::info!("Read input file");
-            let rpx = fs::read(&rpx).context(format!("Failed to read file: {}", rpx.display()))?;
+            let input =
+                fs::read(&rpx).context(format!("Failed to read file: {}", rpx.display()))?;
 
             log::info!("Read manifest file");
             config.read_manifest_metadata()?;
 
-            let content = wuhb::from_rpx(rpx, config)?;
+            let output = wuhb::from_rpx(input, config)?;
 
             log::info!("Write output file");
-            fs::write(&wuhb, content)
+            fs::write(&wuhb, output)
                 .context(format!("Failed to write file: {}", wuhb.display()))?;
         }
+    }
+
+    Ok(())
+}
+
+fn new(path: impl AsRef<Path>) -> anyhow::Result<()> {
+    Command::new("cargo")
+        .arg("new")
+        .args(path.as_ref())
+        .status()
+        .context("Failed to execute cargo new")?;
+
+    Ok(())
+}
+
+fn init(path: impl AsRef<Path>) -> anyhow::Result<()> {
+    let path = path.as_ref();
+
+    let cafe = path.join(".cafe");
+    if !cafe.is_dir() {
+        log::info!("Add `.cafe` submodule");
+        Command::new("git")
+            .current_dir(path)
+            .args([
+                "submodule",
+                "add",
+                "https://github.com/rust-wiiu/cafe-target-spec",
+                ".cafe",
+            ])
+            .status()
+            .context("Failed to initialize `.cafe` submodule. Make sure you are in a git repository or clone the files manually.")?;
+
+        Command::new("git")
+            .current_dir(path)
+            .args(["submodule", "update", "--init", "--recursive", ".cafe"])
+            .status()
+            .context("Failed to init `.cafe` submodule")?;
+    } else {
+        log::warn!("{} folder already exists. Do nothing.", cafe.display());
+    }
+
+    let toolchain = path.join("rust-toolchain.toml");
+    if !toolchain.is_file() {
+        log::info!("Create `rust-toolchain.toml`");
+        fs::write(&toolchain, include_str!("templates/rust-toolchain.toml"))
+            .context("Failed to create `rust-toolchain.toml`")?;
+    } else {
+        log::warn!("{} already exists. Do nothing.", toolchain.display());
+    }
+
+    let cargo = path.join(".cargo");
+    let config = cargo.join("config.toml");
+    if !config.is_file() {
+        log::info!("Create `.cargo/config.toml`");
+
+        if !cargo.is_dir() {
+            fs::create_dir(&cargo).context("Failed to create `.cargo` directory")?;
+        }
+
+        fs::write(&config, include_str!("templates/cargo-config.toml"))
+            .context("Failed to create `.cargo/config.toml`")?;
+    } else {
+        log::warn!("{} already exists. Do nothing.", config.display());
+    }
+
+    Ok(())
+}
+
+fn build(args: &Vec<String>) -> anyhow::Result<()> {
+    Command::new("cargo")
+        .arg("build")
+        .args(args)
+        .status()
+        .context("Failed to build")?;
+
+    let target_dir = cargo_metadata::MetadataCommand::new()
+        .no_deps()
+        .exec()
+        .unwrap()
+        .target_directory
+        .to_string();
+
+    let profile = if let Some(pos) = args.iter().position(|x| x == "--profile") {
+        args.get(pos + 1).map(|s| s.as_str()).unwrap_or("debug")
+    } else if args.iter().any(|x| x == "--release") {
+        "release"
+    } else {
+        "debug"
+    };
+
+    let name = cargo_metadata::MetadataCommand::new()
+        .no_deps()
+        .exec()
+        .unwrap()
+        .root_package()
+        .unwrap()
+        .name
+        .to_string();
+
+    let binary = PathBuf::from(target_dir)
+        .join("powerpc-cafe-nintendo")
+        .join(profile)
+        .join(name);
+
+    // println!("{}", elf.display());
+
+    {
+        let input = fs::read(binary.with_extension("elf")).context("Failed to read elf file")?;
+
+        let output = rpl::from_elf(input, false);
+
+        fs::write(&binary.with_extension("rpx"), output).context("Failed to write rpx file")?;
+    }
+
+    // check if [package.metadata.wuhb] is present in Cargo.toml
+    if cargo_metadata::MetadataCommand::new()
+        .no_deps()
+        .exec()
+        .context("Failed to read manifest")?
+        .root_package()
+        .and_then(|pkg| pkg.metadata.get("wuhb"))
+        .is_some()
+    {
+        let mut config = WuhbConfig::default();
+        config.read_manifest_metadata()?;
+
+        let input = fs::read(&binary.with_extension("rpx")).context("Failed to read rpx file")?;
+
+        let output = wuhb::from_rpx(input, config)?;
+
+        fs::write(&binary.with_extension("rpx"), output).context("Failed to write rpx file")?;
     }
 
     Ok(())

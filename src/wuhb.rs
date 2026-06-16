@@ -3,7 +3,6 @@ use indextree::{Arena, NodeId};
 use std::{
     env,
     io::{Cursor, Write},
-    path::PathBuf,
 };
 
 #[binrw]
