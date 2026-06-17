@@ -22,3 +22,7 @@ log = "0.4.32"
 
 [dev-dependencies]
 rstest = "0.26.1"
+
+[package.metadata.release]
+publish = false
+push = true
