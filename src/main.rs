@@ -19,10 +19,17 @@ use std::{
 };
 
 #[derive(Parser)]
-#[command(author, version, about, long_about = None)]
-struct Cli {
+#[command(name = "cargo", bin_name = "cargo")]
+enum Cargo {
+    #[command(name = "wiiu")]
+    Input(Input),
+}
+
+#[derive(Args)]
+#[command(author, version, about)]
+struct Input {
     #[command(subcommand)]
-    command: Commands,
+    pub cmd: Commands,
 }
 
 fn extension<const N: usize>(
@@ -214,9 +221,9 @@ fn main() -> anyhow::Result<()> {
         .format_target(false)
         .init();
 
-    let cli = Cli::parse();
+    let Cargo::Input(input) = Cargo::parse();
 
-    match cli.command {
+    match input.cmd {
         Commands::Build { cargo_args } => {
             build(&cargo_args)?;
         }

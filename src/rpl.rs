@@ -692,8 +692,6 @@ impl ElfFile {
 
         self.header.write(&mut cursor).unwrap();
 
-        println!("{:#X?}", self.header);
-
         cursor.set_position(shoff as u64);
 
         for section in &self.sections {
