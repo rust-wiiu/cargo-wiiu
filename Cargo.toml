@@ -9,6 +9,7 @@ repository = "https://github.com/rust-wiiu/cargo-wiiu"
 license-file = "LICENSE"
 categories = ["command-line-utilities", "development-tools::cargo-plugins"]
 keywords = ["nintendo", "homebrew", "wiiu"]
+include = ["Cargo.toml", "Cargo.lock", "LICENSE*", "README*", "src/**/*"]
 
 [dependencies]
 anyhow = "1.0.102"
