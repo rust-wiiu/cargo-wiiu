@@ -297,7 +297,7 @@ typed_value!(
     PPC_DIAB_RELSDA_HA = 0xb9,
     // PPC_GHS_REL16_HA = 0xfb,
     PPC_GHS_REL16_HI = 0xfc,
-    // PPC_GHS_REL16_LO = 0xfd,
+    PPC_GHS_REL16_LO = 0xfd,
 );
 
 #[binrw]

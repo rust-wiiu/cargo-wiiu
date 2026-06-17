@@ -126,21 +126,30 @@ impl ElfFile {
         for _ in 0..header.shnum {
             let mut section_header = elf::SectionHeader::read(&mut cursor).unwrap();
 
-            if section_header.addr >= Self::DATA_BASE_ADDRESS
-                && section_header.addr < Self::LOAD_BASE_ADDRESS
-            {
-                section_header.flags |= elf::SectionFlags::WRITE;
+            if section_header.size > 0 && section_header.ty != elf::SectionType::NOBITS {
+                if section_header.addr >= Self::DATA_BASE_ADDRESS
+                    && section_header.addr < Self::LOAD_BASE_ADDRESS
+                {
+                    section_header.flags |= elf::SectionFlags::WRITE;
+                }
+
+                let start = section_header.offset as usize;
+                let end = start + section_header.size as usize;
+
+                sections.push(Section {
+                    header: section_header,
+                    data: SectionData(data[start..end].to_vec()),
+                    name: String::new(),
+                    index: 0,
+                });
+            } else {
+                sections.push(Section {
+                    header: section_header,
+                    data: SectionData(Vec::new()),
+                    name: String::new(),
+                    index: 0,
+                });
             }
-
-            let start = section_header.offset as usize;
-            let end = start + section_header.size as usize;
-
-            sections.push(Section {
-                header: section_header,
-                data: SectionData(data[start..end].to_vec()),
-                name: String::new(),
-                index: 0,
-            });
         }
 
         let str_table = sections[header.shstrndx as usize].data.as_vec();
@@ -258,7 +267,7 @@ impl ElfFile {
                         rels.insert(
                             j,
                             elf::Rela {
-                                info: (index << 8) | elf::RelaType::PPC_GHS_REL16_HI.0,
+                                info: (index << 8) | elf::RelaType::PPC_GHS_REL16_LO.0,
                                 addend: addend + 2,
                                 offset: offset + 2,
                             },
@@ -369,7 +378,7 @@ impl ElfFile {
             stack_size: 0x10000,
             heap_size: 0x8000,
             filename: 0,
-            flags: if is_rpl { 0x2 } else { 0x0 },
+            flags: if is_rpl { 0x0 } else { 0x2 },
             min_version: 0x5078,
             compression_level: 6,
             file_info_pad: 0,
@@ -527,7 +536,7 @@ impl ElfFile {
 
             // 2. Compress directly into the vector (appends after the 4 bytes)
             {
-                let mut encoder = ZlibEncoder::new(&mut deflated, flate2::Compression::best());
+                let mut encoder = ZlibEncoder::new(&mut deflated, flate2::Compression::new(6));
                 encoder.write_all(section.data.as_bytes()).unwrap();
                 encoder.finish().unwrap(); // Flushes and drops encoder, releasing the borrow
             }
@@ -683,6 +692,8 @@ impl ElfFile {
 
         self.header.write(&mut cursor).unwrap();
 
+        println!("{:#X?}", self.header);
+
         cursor.set_position(shoff as u64);
 
         for section in &self.sections {
@@ -726,4 +737,23 @@ pub fn from_elf(input: Vec<u8>, is_rpl: bool) -> Vec<u8> {
     let output = elf.write();
     log::info!("RPL file written successfully");
     output
+}
+
+#[cfg(test)]
+mod tests {
+    // use rstest::rstest;
+    // use std::{fs, path::PathBuf};
+
+    // Cannot test like this because some minor differences
+    // #[test]
+    // fn from_elf() {
+    //     let elf = fs::read("tests/dkp/elf/helloworld.elf").unwrap();
+    //     let rpx = fs::read("tests/dkp/rpx/helloworld.rpx").unwrap();
+
+    //     let converted = super::from_elf(elf, false);
+
+    //     fs::write("tests/converted.rpx", &converted).unwrap();
+
+    //     assert_eq!(converted, rpx);
+    // }
 }
