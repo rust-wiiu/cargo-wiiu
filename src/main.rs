@@ -164,7 +164,7 @@ impl WuhbConfig {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Build
+    /// Build a project. Same as calling `cargo build` followed by `cargo wiiu rpx`. WUHB file will be created if configured in manifest.
     #[command(trailing_var_arg = true, allow_hyphen_values = true)]
     Build {
         /// Arguments given directly to `cargo build`
@@ -174,7 +174,7 @@ enum Commands {
     New { path: PathBuf },
     /// Initializes an existing project
     Init { path: PathBuf },
-    /// Upload
+    /// Upload a binary to a console via the wiiload-plugin.
     Upload {
         /// Binary to upload
         #[arg(value_parser = extension(["rpx", "wuhb"]))]
