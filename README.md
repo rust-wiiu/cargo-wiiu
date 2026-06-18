@@ -4,11 +4,15 @@ Cargo extension to easily work with Nintendo Wii U binaries.
 
 ## Installation
 
-TBD
+```
+cargo install cargo-wiiu
+```
 
 ## Usage
 
-TBD
+```
+cargo wiiu -h
+```
 
 ## Acknowledgments
 
