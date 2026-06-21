@@ -175,13 +175,16 @@ enum Commands {
     /// Initializes an existing project
     Init { path: PathBuf },
     /// Upload a binary to a console via the wiiload-plugin.
+    #[command(trailing_var_arg = true, allow_hyphen_values = true)]
     Upload {
-        /// Binary to upload
-        #[arg(value_parser = extension(["rpx", "wuhb"]))]
-        binary: PathBuf,
         /// IP address of the console
         #[arg(long)]
         ip: Ipv4Addr,
+        /// Binary to upload
+        #[arg(value_parser = extension(["rpx", "wuhb"]))]
+        binary: Option<PathBuf>,
+        /// Arguments given directly to `cargo build` if an explicit binary is not provided
+        cargo_args: Vec<String>,
     },
     /// Convert ELF to RPX (executable)
     Rpx {
@@ -232,10 +235,21 @@ fn main() -> anyhow::Result<()> {
             init(&path)?;
         }
         Commands::Init { path } => init(&path)?,
-        Commands::Upload { binary, ip } => {
+        Commands::Upload {
+            ip,
+            binary,
+            cargo_args,
+        } => {
             log::info!("Read input file");
+
+            let path = match binary {
+                Some(path) => path,
+                None => build(&cargo_args).unwrap(),
+            };
+
             let data =
-                fs::read(&binary).context(format!("Failed to read file: {}", binary.display()))?;
+                fs::read(&path).context(format!("Failed to read file: {}", path.display()))?;
+
             upload::upload_binary(data, ip)?;
         }
         Commands::Rpx { elf, rpx } => {
@@ -350,7 +364,7 @@ fn init(path: impl AsRef<Path>) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn build(args: &Vec<String>) -> anyhow::Result<()> {
+fn build(args: &Vec<String>) -> anyhow::Result<PathBuf> {
     Command::new("cargo")
         .arg("build")
         .args(args)
@@ -386,14 +400,16 @@ fn build(args: &Vec<String>) -> anyhow::Result<()> {
         .join(profile)
         .join(name);
 
-    // println!("{}", elf.display());
+    let mut final_binary;
 
     {
         let input = fs::read(binary.with_extension("elf")).context("Failed to read elf file")?;
 
         let output = rpl::from_elf(input, false);
 
-        fs::write(&binary.with_extension("rpx"), output).context("Failed to write rpx file")?;
+        final_binary = binary.with_extension("rpx");
+
+        fs::write(&final_binary, output).context("Failed to write rpx file")?;
     }
 
     // check if [package.metadata.wuhb] is present in Cargo.toml
@@ -412,8 +428,9 @@ fn build(args: &Vec<String>) -> anyhow::Result<()> {
 
         let output = wuhb::from_rpx(input, config)?;
 
-        fs::write(&binary.with_extension("rpx"), output).context("Failed to write rpx file")?;
+        final_binary = binary.with_extension("wuhb");
+        fs::write(&final_binary, output).context("Failed to write rpx file")?;
     }
 
-    Ok(())
+    Ok(final_binary)
 }
