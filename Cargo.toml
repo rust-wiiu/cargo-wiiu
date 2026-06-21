@@ -1,6 +1,6 @@
 [package]
 name = "cargo-wiiu"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 authors = ["29th-Day"]
 description = "Cargo extension to easily work with Nintendo Wii U binaries."
