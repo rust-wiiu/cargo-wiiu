@@ -174,6 +174,14 @@ enum Commands {
     New { path: PathBuf },
     /// Initializes an existing project
     Init { path: PathBuf },
+    /// Build a project and run it in Cemu. When not specified, the `CEMU` environment variable is used.
+    #[command(trailing_var_arg = true, allow_hyphen_values = true)]
+    Run {
+        #[arg(long)]
+        cemu: Option<PathBuf>,
+        /// Arguments given directly to `cargo build`
+        cargo_args: Vec<String>,
+    },
     /// Upload a binary to a console via the wiiload-plugin.
     #[command(trailing_var_arg = true, allow_hyphen_values = true)]
     Upload {
@@ -235,6 +243,26 @@ fn main() -> anyhow::Result<()> {
             init(&path)?;
         }
         Commands::Init { path } => init(&path)?,
+        Commands::Run { cemu, cargo_args } => {
+            let binary = build(&cargo_args)?;
+
+            let cemu = cemu.unwrap_or_else(|| {
+                PathBuf::from(
+                    std::env::var("CEMU")
+                        .expect("Either `--cemu <PATH>` or env var `CEMU` must be specified"),
+                )
+            });
+
+            let output = Command::new(cemu)
+                .arg("-g")
+                .arg(binary.canonicalize()?)
+                .output()?;
+
+            if !output.status.success() {
+                eprint!("{}", String::from_utf8_lossy(&output.stdout));
+                eprint!("{}", String::from_utf8_lossy(&output.stderr));
+            }
+        }
         Commands::Upload {
             ip,
             binary,

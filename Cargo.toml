@@ -12,14 +12,14 @@ keywords = ["nintendo", "homebrew", "wiiu"]
 include = ["Cargo.toml", "Cargo.lock", "LICENSE*", "README*", "src/**/*"]
 
 [dependencies]
-anyhow = "1.0.102"
-binrw = "0.15.1"
+anyhow = "1.0.104"
+binrw = "0.15.2"
 cargo_metadata = "0.23.1"
-clap = { version = "4.6.1", features = ["derive"] }
-env_logger = "0.11.10"
+clap = { version = "4.6.6", features = ["derive"] }
+env_logger = "0.11.11"
 flate2 = { version = "1.1.9", default-features = false, features = ["zlib-rs"] }
 indextree = "4.8.1"
-log = "0.4.32"
+log = "0.4.33"
 
 [dev-dependencies]
 rstest = "0.26.1"
