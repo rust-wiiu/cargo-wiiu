@@ -272,7 +272,7 @@ fn main() -> anyhow::Result<()> {
 
             let path = match binary {
                 Some(path) => path,
-                None => build(&cargo_args).unwrap(),
+                None => build(&cargo_args)?,
             };
 
             let data =
@@ -393,11 +393,13 @@ fn init(path: impl AsRef<Path>) -> anyhow::Result<()> {
 }
 
 fn build(args: &Vec<String>) -> anyhow::Result<PathBuf> {
-    Command::new("cargo")
+    let status = Command::new("cargo")
         .arg("build")
         .args(args)
         .status()
         .context("Failed to build")?;
+
+    anyhow::ensure!(status.success(), "`cargo build` failed with {status}");
 
     let target_dir = cargo_metadata::MetadataCommand::new()
         .no_deps()
