@@ -5,6 +5,7 @@
 //! unwrap() must be used in places that can not be fixed by the user (e.g. Cursor::write on a Vec). Result::context() by anyhow should be used in places where the user can fix the error (e.g. reading missing file).
 
 mod elf;
+mod logger;
 mod rpl;
 mod upload;
 mod wuhb;
@@ -194,6 +195,17 @@ enum Commands {
         /// Arguments given directly to `cargo build` if an explicit binary is not provided
         cargo_args: Vec<String>,
     },
+    /// Display output from a console's serial port
+    Logger {
+        /// Serial port (e.g. /dev/ttyUSB0 or COM3). Lists available ports if omitted.
+        port: Option<String>,
+        /// Baud rate
+        #[arg(long, default_value_t = 57600)]
+        baud: u32,
+        /// List non-USB ports too (only used if no port is given)
+        #[arg(long)]
+        all: bool,
+    },
     /// Convert ELF to RPX (executable)
     Rpx {
         /// Path to the elf binary
@@ -281,6 +293,10 @@ fn main() -> anyhow::Result<()> {
 
             upload::upload_binary(data, ip)?;
         }
+        Commands::Logger { port, baud, all } => match port {
+            Some(port) => logger::run(&port, baud)?,
+            None => logger::list_ports(all)?,
+        },
         Commands::Rpx { elf, rpx } => {
             let rpx = rpx.unwrap_or_else(|| elf.with_extension("rpx"));
 
