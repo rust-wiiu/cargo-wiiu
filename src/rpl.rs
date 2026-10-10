@@ -2,9 +2,9 @@ use crate::elf;
 use binrw::{BinRead, BinWrite};
 use flate2::{Crc, write::ZlibEncoder};
 use std::{
+    collections::HashMap,
     ffi::CStr,
     io::{Cursor, Write},
-    usize,
 };
 
 #[derive(Debug)]
@@ -216,6 +216,144 @@ impl ElfFile {
                 section.header.ty = elf::SectionType::RPL_IMPORTS;
             }
         }
+    }
+
+    fn add_eh_frame_relocations(&mut self) {
+        fn read_u32(data: &[u8], off: usize) -> u32 {
+            u32::from_be_bytes(data[off..off + 4].try_into().unwrap())
+        }
+
+        fn skip_leb128(data: &[u8], p: &mut usize) {
+            while data[*p] & 0x80 != 0 {
+                *p += 1;
+            }
+            *p += 1;
+        }
+
+        fn is_absolute(enc: u8) -> bool {
+            enc != 0xff && enc & 0xf0 == 0
+        }
+
+        fn pointer_size(enc: u8) -> usize {
+            match enc & 0x0f {
+                0x00 | 0x03 | 0x0b => 4,
+                0x02 | 0x0a => 2,
+                0x04 | 0x0c => 8,
+                e => panic!("unsupported pointer encoding {e:#x}"),
+            }
+        }
+
+        let Some(symtab) = self
+            .sections
+            .iter()
+            .position(|s| s.header.ty == elf::SectionType::SYMTAB)
+        else {
+            return;
+        };
+        let symbols = self.sections[symtab].data.as_symbol();
+        let strtab = self.sections[self.sections[symtab].header.link as usize]
+            .data
+            .as_vec();
+        let name = |s: &elf::Symbol| {
+            CStr::from_bytes_until_nul(&strtab[s.name as usize..])
+                .ok()
+                .and_then(|n| n.to_str().ok())
+        };
+
+        let Some(eh_frame) = symbols.iter().find(|s| name(s) == Some("__eh_frame")) else {
+            return;
+        };
+
+        let text = self
+            .sections
+            .iter()
+            .position(|s| s.name == ".text")
+            .expect("missing .text");
+        let text_addr = self.sections[text].header.addr;
+        let section_symbol = symbols
+            .iter()
+            .position(|s| {
+                elf::SymbolType(s.info & 0xF) == elf::SymbolType::SECTION
+                    && s.shndx as usize == text
+            })
+            .expect("missing .text section symbol") as u32;
+        let rela = self
+            .sections
+            .iter()
+            .position(|s| s.header.ty == elf::SectionType::RELA && s.header.info as usize == text)
+            .expect("missing .rela.text");
+
+        let data = self.sections[text].data.as_vec();
+        let reloc = |p: usize| elf::Rela {
+            offset: text_addr + p as u32,
+            info: (section_symbol << 8) | elf::RelaType::PPC_ADDR32.0,
+            addend: (read_u32(&data, p) - text_addr) as i32,
+        };
+
+        let mut added = Vec::new();
+        let mut cies = HashMap::new();
+        let mut off = (eh_frame.value - text_addr) as usize;
+
+        loop {
+            let len = read_u32(&data, off) as usize;
+            if len == 0 {
+                break;
+            }
+            let id = read_u32(&data, off + 4) as usize;
+            let mut p = off + 8;
+
+            if id == 0 {
+                let version = data[p];
+                p += 1;
+                let aug = CStr::from_bytes_until_nul(&data[p..]).unwrap().to_bytes();
+                p += aug.len() + 1;
+                skip_leb128(&data, &mut p); // code alignment
+                skip_leb128(&data, &mut p); // data alignment
+                if version == 1 {
+                    p += 1;
+                } else {
+                    skip_leb128(&data, &mut p);
+                }
+
+                let (mut fde_enc, mut lsda_enc) = (0, 0xff);
+                if aug.first() == Some(&b'z') {
+                    skip_leb128(&data, &mut p);
+                    for &c in &aug[1..] {
+                        let enc = data[p];
+                        p += 1;
+                        match c {
+                            b'P' => {
+                                if is_absolute(enc) {
+                                    added.push(reloc(p));
+                                }
+                                p += pointer_size(enc);
+                            }
+                            b'L' => lsda_enc = enc,
+                            b'R' => fde_enc = enc,
+                            _ => panic!("unsupported CIE augmentation {:?}", c as char),
+                        }
+                    }
+                }
+                cies.insert(off, (fde_enc, lsda_enc));
+            } else {
+                let (fde_enc, lsda_enc) = cies[&(off + 4 - id)];
+                p += 2 * pointer_size(fde_enc);
+                if lsda_enc != 0xff {
+                    skip_leb128(&data, &mut p);
+                    if is_absolute(lsda_enc) && read_u32(&data, p) != 0 {
+                        added.push(reloc(p));
+                    }
+                }
+            }
+
+            off += 4 + len;
+        }
+
+        log::debug!("Added {} .eh_frame relocations", added.len());
+        let mut rels = self.sections[rela].data.as_rela();
+        rels.extend(added);
+        rels.sort_by_key(|r| r.offset);
+        self.sections[rela].data.from_rela(rels);
     }
 
     fn fix_relocations(&mut self) {
@@ -718,6 +856,8 @@ pub fn from_elf(input: Vec<u8>, is_rpl: bool) -> Vec<u8> {
     log::debug!("Section flags fixed");
     elf.fix_section_types();
     log::debug!("Section types fixed");
+    elf.add_eh_frame_relocations();
+    log::debug!("Eh frame relocations added");
     elf.fix_relocations();
     log::debug!("Relocations fixed");
     elf.fix_loader_virtual_addresses();
