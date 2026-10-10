@@ -20,6 +20,7 @@ env_logger = "0.11.11"
 flate2 = { version = "1.1.9", default-features = false, features = ["zlib-rs"] }
 indextree = "4.8.1"
 log = "0.4.33"
+regex = "1.13.1"
 serialport = { version = "4.10.1", default-features = false }
 
 [dev-dependencies]

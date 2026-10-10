@@ -4,9 +4,16 @@ use std::{
 };
 
 use anyhow::Context;
+use regex::bytes::Regex;
 use serialport::{DataBits, FlowControl, Parity, SerialPortType, StopBits};
 
-pub fn run(port: &str, baud: u32) -> anyhow::Result<()> {
+pub fn run(
+    port: &str,
+    baud: u32,
+    include: &[Regex],
+    exclude: &[Regex],
+    trim: bool,
+) -> anyhow::Result<()> {
     let mut serial = serialport::new(port, baud)
         .data_bits(DataBits::Eight)
         .parity(Parity::None)
@@ -20,8 +27,9 @@ pub fn run(port: &str, baud: u32) -> anyhow::Result<()> {
 
     let mut stdout = std::io::stdout().lock();
     let mut buf = [0u8; 1024];
-    let mut out = Vec::with_capacity(buf.len());
+    let mut line = Vec::new();
     let mut last_cr = false;
+    let mut last_empty = false;
 
     loop {
         let n = match serial.read(&mut buf) {
@@ -33,19 +41,34 @@ pub fn run(port: &str, baud: u32) -> anyhow::Result<()> {
             Err(e) => return Err(e).context(format!("Failed to read from {port}")),
         };
 
-        out.clear();
         for &b in &buf[..n] {
-            match b {
-                b'\r' => out.push(b'\n'),
-                b'\n' if last_cr => {}
-                _ => out.push(b),
-            }
+            let skip_lf = b == b'\n' && last_cr;
             last_cr = b == b'\r';
+
+            match b {
+                _ if skip_lf => {}
+                b'\r' | b'\n' => {
+                    if is_visible(&line, include, exclude) {
+                        let empty = line.trim_ascii().is_empty();
+                        if !(trim && empty && last_empty) {
+                            line.push(b'\n');
+                            stdout.write_all(&line)?;
+                        }
+                        last_empty = empty;
+                    }
+                    line.clear();
+                }
+                _ => line.push(b),
+            }
         }
 
-        stdout.write_all(&out)?;
         stdout.flush()?;
     }
+}
+
+fn is_visible(line: &[u8], include: &[Regex], exclude: &[Regex]) -> bool {
+    (include.is_empty() || include.iter().any(|r| r.is_match(line)))
+        && !exclude.iter().any(|r| r.is_match(line))
 }
 
 pub fn list_ports(all: bool) -> anyhow::Result<()> {
@@ -83,7 +106,10 @@ pub fn list_ports(all: bool) -> anyhow::Result<()> {
             println!("  {}", port.port_name);
         }
     } else if !other.is_empty() {
-        println!("  ({} non-USB ports hidden, use --all to show)", other.len());
+        println!(
+            "  ({} non-USB ports hidden, use --all to show)",
+            other.len()
+        );
     }
 
     println!("\nUsage: cargo wiiu logger <PORT>");
@@ -93,5 +119,8 @@ pub fn list_ports(all: bool) -> anyhow::Result<()> {
 
 fn natural_key(name: &str) -> (String, u64) {
     let split = name.trim_end_matches(|c: char| c.is_ascii_digit()).len();
-    (name[..split].to_string(), name[split..].parse().unwrap_or(0))
+    (
+        name[..split].to_string(),
+        name[split..].parse().unwrap_or(0),
+    )
 }

@@ -205,6 +205,15 @@ enum Commands {
         /// List non-USB ports too (only used if no port is given)
         #[arg(long)]
         all: bool,
+        /// Only show lines matching this regex. Can be given multiple times; a line is shown if any matches.
+        #[arg(short, long, value_parser = regex::bytes::Regex::new)]
+        include: Vec<regex::bytes::Regex>,
+        /// Hide lines matching this regex. Can be given multiple times.
+        #[arg(short, long, value_parser = regex::bytes::Regex::new)]
+        exclude: Vec<regex::bytes::Regex>,
+        /// Collapse consecutive empty lines into one
+        #[arg(long)]
+        trim: bool,
     },
     /// Convert ELF to RPX (executable)
     Rpx {
@@ -293,8 +302,15 @@ fn main() -> anyhow::Result<()> {
 
             upload::upload_binary(data, ip)?;
         }
-        Commands::Logger { port, baud, all } => match port {
-            Some(port) => logger::run(&port, baud)?,
+        Commands::Logger {
+            port,
+            baud,
+            all,
+            include,
+            exclude,
+            trim,
+        } => match port {
+            Some(port) => logger::run(&port, baud, &include, &exclude, trim)?,
             None => logger::list_ports(all)?,
         },
         Commands::Rpx { elf, rpx } => {

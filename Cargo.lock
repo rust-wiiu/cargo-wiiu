@@ -152,6 +152,7 @@ dependencies = [
  "flate2",
  "indextree",
  "log",
+ "regex",
  "rstest",
  "serialport",
 ]
