@@ -426,7 +426,7 @@ fn build(args: &Vec<String>) -> anyhow::Result<PathBuf> {
         .to_string();
 
     let binary = PathBuf::from(target_dir)
-        .join("powerpc-cafe-nintendo")
+        .join("powerpc-nintendo-cafe") // powerpc-cafe-nintendo
         .join(profile)
         .join(name);
 
