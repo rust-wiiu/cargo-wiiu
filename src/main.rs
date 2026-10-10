@@ -227,6 +227,7 @@ enum Commands {
 
 fn main() -> anyhow::Result<()> {
     env_logger::Builder::default()
+        .parse_default_env()
         .format_timestamp(None)
         .format_module_path(false)
         .format_target(false)
