@@ -18,6 +18,7 @@ cargo_metadata = "0.23.1"
 clap = { version = "4.6.6", features = ["derive"] }
 env_logger = "0.11.11"
 flate2 = { version = "1.1.9", default-features = false, features = ["zlib-rs"] }
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "bmp", "tga", "webp"] }
 indextree = "4.8.1"
 log = "0.4.33"
 regex = "1.13.1"

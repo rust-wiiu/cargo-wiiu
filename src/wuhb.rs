@@ -1,8 +1,10 @@
+use anyhow::Context;
 use binrw::{BinWrite, binrw};
+use flate2::write::GzEncoder;
 use indextree::{Arena, NodeId};
 use std::{
-    env,
     io::{Cursor, Write},
+    path::Path,
 };
 
 #[binrw]
@@ -156,7 +158,7 @@ impl HashTable {
 
     fn hash(&mut self, parent_offset: u32, name: &str, current_offset: u32) -> u32 {
         let mut hash = parent_offset ^ 123456789;
-        for c in name.chars() {
+        for c in name.bytes() {
             hash = (hash >> 5) | (hash << 27);
             hash ^= c.to_ascii_uppercase() as u32;
         }
@@ -257,100 +259,105 @@ impl RomFs {
             })
     }
 
+    fn folder_mut(&mut self, id: NodeId) -> &mut Folder {
+        match self.arena[id].get_mut() {
+            Entry::Folder(f) => f,
+            _ => unreachable!(),
+        }
+    }
+
+    fn file_mut(&mut self, id: NodeId) -> &mut File {
+        match self.arena[id].get_mut() {
+            Entry::File(f) => f,
+            _ => unreachable!(),
+        }
+    }
+
+    fn child_folders(&self, id: NodeId) -> Vec<NodeId> {
+        id.children(&self.arena)
+            .filter(|&c| matches!(self.arena[c].get(), Entry::Folder(_)))
+            .collect()
+    }
+
+    fn child_files(&self, id: NodeId) -> Vec<NodeId> {
+        id.children(&self.arena)
+            .filter(|&c| matches!(self.arena[c].get(), Entry::File(_)))
+            .collect()
+    }
+
+    /// Order in which wuhbtool lays out file entries and data: subfolders first, then own files.
+    fn file_order(&self, folder: NodeId, order: &mut Vec<NodeId>) {
+        for child in self.child_folders(folder) {
+            self.file_order(child, order);
+        }
+        order.extend(self.child_files(folder));
+    }
+
     fn calculate_folder_metadata(&mut self) {
-        let folder_ids: Vec<NodeId> = self
-            .root
-            .descendants(&self.arena)
-            .filter(|&id| matches!(self.arena[id].get(), Entry::Folder(_)))
-            .collect();
+        let folder_ids: Vec<NodeId> = self.folders().map(|(id, _)| id).collect();
 
         let mut seek = 0;
+        for &id in &folder_ids {
+            let folder = self.folder_mut(id);
+            folder.offset = seek;
+            folder.meta.name_size = folder.name.len() as u32;
+            folder.meta.name = folder.name.clone();
 
-        for id in folder_ids {
-            let parent_id = id.parent(&self.arena);
-            let sibling_id = id.preceding_siblings(&self.arena).nth(1);
+            seek += folder.meta.bytes() as u32;
+            seek = seek.next_multiple_of(4);
+        }
 
-            let parent = match parent_id {
-                Some(id) => match self.arena[id].get_mut() {
-                    Entry::Folder(f) => {
-                        f.meta.child = f.meta.child.min(seek);
-                        f.offset
-                    }
-                    _ => unreachable!(),
-                },
-                None => 0,
-            };
+        for &id in &folder_ids {
+            let offset = self.folder_mut(id).offset;
+            let parent = id
+                .parent(&self.arena)
+                .map_or(offset, |p| self.folder_mut(p).offset);
+            self.folder_mut(id).meta.parent = parent;
 
-            match sibling_id {
-                Some(id) => match self.arena[id].get_mut() {
-                    Entry::Folder(f) => {
-                        f.meta.sibling = seek;
-                    }
-                    _ => unreachable!(),
-                },
-                None => (),
-            };
-
-            match self.arena[id].get_mut() {
-                Entry::Folder(folder) => {
-                    folder.offset = seek;
-                    folder.meta.parent = parent;
-                    folder.meta.name_size = folder.name.len() as u32;
-                    folder.meta.name = folder.name.clone();
-
-                    seek += folder.meta.bytes() as u32;
-                    seek = seek.next_multiple_of(4);
-                }
-                _ => unreachable!(),
+            let children = self.child_folders(id);
+            if let Some(&first) = children.first() {
+                self.folder_mut(id).meta.child = self.folder_mut(first).offset;
+            }
+            for pair in children.windows(2) {
+                self.folder_mut(pair[0]).meta.sibling = self.folder_mut(pair[1]).offset;
             }
         }
     }
 
     fn calculate_file_metadata(&mut self) {
-        let file_ids: Vec<NodeId> = self
-            .root
-            .descendants(&self.arena)
-            .filter(|&id| matches!(self.arena[id].get(), Entry::File(_)))
-            .collect();
+        let mut file_ids = Vec::new();
+        self.file_order(self.root, &mut file_ids);
 
         let mut seek = 0;
         let mut partition = 0;
 
         for id in file_ids {
-            let parent_id = id.parent(&self.arena).unwrap_or(self.root);
-            // let sibling_id = id.preceding_siblings(&self.arena).nth(1);
+            let parent = id.parent(&self.arena).unwrap();
+            let parent = self.folder_mut(parent).offset;
 
-            let (parent, sibling) = match self.arena[parent_id].get_mut() {
-                Entry::Folder(f) => {
-                    if seek < f.meta.file {
-                        let sibling = f.meta.file;
-                        f.meta.file = seek;
-                        (f.offset, sibling)
-                    } else {
-                        (f.offset, NONE)
-                    }
-                }
-                _ => unreachable!(),
-            };
+            let file = self.file_mut(id);
+            file.offset = seek;
+            file.meta.parent = parent;
+            file.meta.offset = partition;
+            file.meta.size = file.content.len() as u64;
+            file.meta.name_size = file.name.len() as u32;
+            file.meta.name = file.name.clone();
 
-            match self.arena[id].get_mut() {
-                Entry::File(f) => {
-                    f.offset = seek;
-                    f.meta.parent = parent;
-                    f.meta.sibling = sibling;
-                    f.meta.offset = partition;
-                    f.meta.size = f.content.len() as u64;
-                    // f.meta.hash = _;
-                    f.meta.name_size = f.name.len() as u32;
-                    f.meta.name = f.name.clone();
+            partition += file.meta.size;
+            partition = partition.next_multiple_of(16);
 
-                    partition += f.meta.size;
-                    partition = partition.next_multiple_of(16);
+            seek += file.meta.bytes() as u32;
+            seek = seek.next_multiple_of(4);
+        }
 
-                    seek += f.meta.bytes() as u32;
-                    seek = seek.next_multiple_of(4);
-                }
-                _ => unreachable!(),
+        let folder_ids: Vec<NodeId> = self.folders().map(|(id, _)| id).collect();
+        for id in folder_ids {
+            let children = self.child_files(id);
+            if let Some(&first) = children.first() {
+                self.folder_mut(id).meta.file = self.file_mut(first).offset;
+            }
+            for pair in children.windows(2) {
+                self.file_mut(pair[0]).meta.sibling = self.file_mut(pair[1]).offset;
             }
         }
     }
@@ -403,6 +410,84 @@ impl RomFs {
     }
 }
 
+impl RomFs {
+    /// Adds the contents of `path` to `folder`. Entries are sorted by name so the output is reproducible.
+    fn add_dir(&mut self, folder: NodeId, path: &Path) -> anyhow::Result<()> {
+        let mut entries = std::fs::read_dir(path)
+            .context(format!("Failed to read directory: {}", path.display()))?
+            .collect::<Result<Vec<_>, _>>()
+            .context(format!("Failed to read directory: {}", path.display()))?;
+        entries.sort_by_key(|e| e.file_name());
+
+        for entry in entries {
+            let path = entry.path();
+            let name = entry.file_name();
+            let name = name
+                .to_str()
+                .context(format!("File name is not valid UTF-8: {}", path.display()))?;
+            let metadata = std::fs::metadata(&path)
+                .context(format!("Failed to read metadata: {}", path.display()))?;
+
+            if metadata.is_dir() {
+                let child = self.add_folder(folder, name);
+                self.add_dir(child, &path)?;
+            } else if metadata.is_file() {
+                let content = std::fs::read(&path)
+                    .context(format!("Failed to read file: {}", path.display()))?;
+                self.add_file(folder, name, content);
+            } else {
+                anyhow::bail!("Unsupported file type: {}", path.display());
+            }
+        }
+
+        Ok(())
+    }
+}
+
+/// Converts an image to a gzipped, uncompressed, bottom-up TGA like wuhbtool (FreeImage) does.
+/// Aroma copies `iconTex.tga` verbatim into a fixed 65580 byte buffer, so the layout matters.
+fn tga_gz(path: &Path, width: u32, height: u32, alpha: bool) -> anyhow::Result<Vec<u8>> {
+    let image = image::open(path).context(format!("Failed to read image: {}", path.display()))?;
+
+    anyhow::ensure!(
+        image.width() == width && image.height() == height,
+        "{} is {}x{}, but must be {width}x{height}",
+        path.display(),
+        image.width(),
+        image.height()
+    );
+
+    let bpp: u8 = if alpha { 32 } else { 24 };
+
+    let mut tga = Vec::with_capacity(18 + (width * height * bpp as u32 / 8) as usize + 26);
+    tga.extend_from_slice(&[0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+    tga.extend_from_slice(&(width as u16).to_le_bytes());
+    tga.extend_from_slice(&(height as u16).to_le_bytes());
+    tga.push(bpp);
+    tga.push(if alpha { 8 } else { 0 });
+
+    if alpha {
+        for row in image.to_rgba8().rows().rev() {
+            for &image::Rgba([r, g, b, a]) in row {
+                tga.extend_from_slice(&[b, g, r, a]);
+            }
+        }
+    } else {
+        for row in image.to_rgb8().rows().rev() {
+            for &image::Rgb([r, g, b]) in row {
+                tga.extend_from_slice(&[b, g, r]);
+            }
+        }
+    }
+
+    tga.extend_from_slice(&[0; 8]);
+    tga.extend_from_slice(b"TRUEVISION-XFILE.\0");
+
+    let mut encoder = GzEncoder::new(Vec::new(), flate2::Compression::best());
+    encoder.write_all(&tga).unwrap();
+    Ok(encoder.finish().unwrap())
+}
+
 pub fn from_rpx(rpx: Vec<u8>, config: super::WuhbConfig) -> anyhow::Result<Vec<u8>> {
     let mut fs = RomFs::new();
 
@@ -411,22 +496,55 @@ pub fn from_rpx(rpx: Vec<u8>, config: super::WuhbConfig) -> anyhow::Result<Vec<u
 
     fs.add_file(code, "root.rpx", rpx);
 
+    let name = &config.name;
+    // Aroma stores the name in a `char[64]`
+    anyhow::ensure!(
+        name.len() <= 63,
+        "Name must be at most 63 bytes, but is {}: {name:?}",
+        name.len()
+    );
+    anyhow::ensure!(!name.contains('\n'), "Name must not contain a line break");
+
     fs.add_file(
         meta,
         "meta.ini",
         format!(
-            "[menu]\nlongname={}\nshortname={}\nauthor={}\n",
-            &config.long_name,
-            &config.short_name,
+            "[menu]\nlongname={name}\nshortname={name}\nauthor={}\n",
             if cfg!(test) {
                 // Insert the string used by wuhbtool to allow for byte comparison
                 "Built with devkitPPC & wut"
             } else {
-                env!("CARGO_PKG_AUTHORS")
+                &config.author
             }
         )
         .into_bytes(),
     );
+
+    for (path, name, width, height, alpha) in [
+        (&config.icon, "iconTex.tga.gz", 128, 128, true),
+        (&config.tv_image, "bootTvTex.tga.gz", 1280, 720, false),
+        (&config.drc_image, "bootDrcTex.tga.gz", 854, 480, false),
+    ] {
+        if let Some(path) = path {
+            fs.add_file(meta, name, tga_gz(path, width, height, alpha)?);
+        }
+    }
+
+    if let Some(path) = &config.content {
+        anyhow::ensure!(
+            path.is_dir(),
+            "Content path is not a directory: {}",
+            path.display()
+        );
+
+        // wuhbtool omits an empty content folder
+        if std::fs::read_dir(path)?.next().is_some() {
+            let content = fs.add_folder(fs.root, "content");
+            fs.add_dir(content, path)?;
+        } else {
+            log::warn!("Content folder is empty: {}", path.display());
+        }
+    }
 
     log::info!("RomFS created");
 
@@ -442,16 +560,18 @@ pub fn from_rpx(rpx: Vec<u8>, config: super::WuhbConfig) -> anyhow::Result<Vec<u
     let mut header = RomFsHeader::default();
 
     // File content / partition
+    let mut partition_end = header.file_partition_ofs;
     for (_, file) in fs.files() {
         cursor.set_position((header.file_partition_ofs + file.meta.offset).next_multiple_of(16));
 
-        cursor.write(&file.content).unwrap();
+        cursor.write_all(&file.content).unwrap();
         assert_eq!(
             cursor.position(),
             header.file_partition_ofs + file.meta.offset + file.meta.size
         );
-        cursor.set_position(cursor.position().next_multiple_of(4));
+        partition_end = partition_end.max(cursor.position());
     }
+    cursor.set_position(partition_end.next_multiple_of(4));
     log::debug!("File partition written");
 
     // Directory hash table
@@ -491,11 +611,14 @@ pub fn from_rpx(rpx: Vec<u8>, config: super::WuhbConfig) -> anyhow::Result<Vec<u
 
     // File entry table
     header.file_table_ofs = cursor.position();
+    let mut file_table_end = header.file_table_ofs;
     for (_, file) in fs.files() {
         cursor.set_position(header.file_table_ofs + file.offset as u64);
         file.meta.write(&mut cursor).unwrap();
+        file_table_end = file_table_end.max(cursor.position().next_multiple_of(4));
     }
-    header.file_table_size = cursor.position() - header.file_table_ofs;
+    cursor.get_mut().resize(file_table_end as usize, 0);
+    header.file_table_size = file_table_end - header.file_table_ofs;
     log::debug!("File table written");
 
     // File header
@@ -509,8 +632,151 @@ pub fn from_rpx(rpx: Vec<u8>, config: super::WuhbConfig) -> anyhow::Result<Vec<u
 #[cfg(test)]
 mod tests {
     use crate::WuhbConfig;
+    use flate2::read::GzDecoder;
     use rstest::rstest;
-    use std::{fs, path::PathBuf};
+    use std::{fs, io::Read, path::PathBuf};
+
+    fn decoded_tga(width: u32, height: u32, alpha: bool) -> anyhow::Result<Vec<u8>> {
+        let path = std::env::temp_dir().join(format!("cargo-wiiu-{width}x{height}.png"));
+        image::RgbaImage::from_fn(width, height, |x, y| {
+            image::Rgba([x as u8, y as u8, 0x40, if y == 0 { 0x80 } else { 0xFF }])
+        })
+        .save(&path)
+        .unwrap();
+
+        let gz = super::tga_gz(&path, 128, 128, alpha);
+        fs::remove_file(&path).unwrap();
+
+        let mut tga = Vec::new();
+        GzDecoder::new(gz?.as_slice())
+            .read_to_end(&mut tga)
+            .unwrap();
+        Ok(tga)
+    }
+
+    #[test]
+    fn tga_icon_layout() {
+        let tga = decoded_tga(128, 128, true).unwrap();
+
+        // Same header and size as Aroma's built-in default icon
+        assert_eq!(tga.len(), 65580);
+        assert_eq!(
+            tga[..18],
+            [
+                0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x80, 0, 0x80, 0, 0x20, 0x08
+            ]
+        );
+        assert!(tga.ends_with(b"TRUEVISION-XFILE.\0"));
+
+        // Bottom-up rows, BGRA pixels: first pixel is (x=0, y=127)
+        assert_eq!(tga[18..22], [0x40, 127, 0, 0xFF]);
+        // Last row is the image's first row (alpha 0x80)
+        assert_eq!(tga[18 + 127 * 128 * 4..][..4], [0x40, 0, 0, 0x80]);
+    }
+
+    #[test]
+    fn tga_wrong_size() {
+        let err = decoded_tga(64, 64, true).unwrap_err().to_string();
+        assert!(err.contains("is 64x64, but must be 128x128"), "{err}");
+    }
+
+    /// Walks the directory and file tables via their parent/sibling/child links.
+    fn list_files(wuhb: &[u8]) -> Vec<(String, Vec<u8>)> {
+        let u32_at = |o: usize| u32::from_be_bytes(wuhb[o..o + 4].try_into().unwrap());
+        let u64_at = |o: usize| u64::from_be_bytes(wuhb[o..o + 8].try_into().unwrap()) as usize;
+        let name_at = |o: usize, len: usize| String::from_utf8(wuhb[o..o + len].to_vec()).unwrap();
+
+        let (dir_table, file_table, partition) = (u64_at(0x18), u64_at(0x38), u64_at(0x48));
+
+        let mut out = Vec::new();
+        let mut stack = vec![(0u32, String::new())];
+        while let Some((dir, path)) = stack.pop() {
+            let entry = dir_table + dir as usize;
+            let mut file = u32_at(entry + 12);
+            while file != super::NONE {
+                let f = file_table + file as usize;
+                let name = name_at(f + 0x20, u32_at(f + 0x1C) as usize);
+                let (offset, size) = (u64_at(f + 8), u64_at(f + 16));
+                out.push((
+                    format!("{path}/{name}"),
+                    wuhb[partition + offset..partition + offset + size].to_vec(),
+                ));
+                file = u32_at(f + 4);
+            }
+
+            let mut child = u32_at(entry + 8);
+            while child != super::NONE {
+                let c = dir_table + child as usize;
+                let name = name_at(c + 0x18, u32_at(c + 0x14) as usize);
+                stack.push((child, format!("{path}/{name}")));
+                child = u32_at(c + 4);
+            }
+        }
+
+        out.sort();
+        out
+    }
+
+    #[test]
+    fn name_length() {
+        let build = |name: &str| {
+            super::from_rpx(
+                Vec::new(),
+                WuhbConfig {
+                    name: String::from(name),
+                    ..Default::default()
+                },
+            )
+        };
+
+        assert!(build(&"a".repeat(63)).is_ok());
+        assert!(build(&"a".repeat(64)).is_err());
+        // 32 two-byte characters are 64 bytes
+        assert!(build(&"ä".repeat(32)).is_err());
+    }
+
+    #[test]
+    fn content_folder() {
+        let dir = std::env::temp_dir().join("cargo-wiiu-content");
+        let _ = fs::remove_dir_all(&dir);
+
+        let files: [(&str, &[u8]); 6] = [
+            ("a.txt", b"root file"),
+            ("assets/img/1.dat", &[1; 300]),
+            ("assets/readme.md", b"nested"),
+            ("empty.bin", b""),
+            ("zz/sub/deep/leaf", b"leaf"),
+            ("zz/Upper.TXT", b"case"),
+        ];
+        for (path, data) in files {
+            let path = dir.join(path);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, data).unwrap();
+        }
+        fs::create_dir_all(dir.join("assets/empty_dir")).unwrap();
+
+        let wuhb = super::from_rpx(
+            b"rpx".to_vec(),
+            WuhbConfig {
+                content: Some(dir.clone()),
+                ..Default::default()
+            },
+        );
+        fs::remove_dir_all(&dir).unwrap();
+
+        let mut expected: Vec<(String, Vec<u8>)> = files
+            .iter()
+            .map(|(p, d)| (format!("/content/{p}"), d.to_vec()))
+            .collect();
+        expected.push((String::from("/code/root.rpx"), b"rpx".to_vec()));
+        expected.sort();
+
+        let listed: Vec<_> = list_files(&wuhb.unwrap())
+            .into_iter()
+            .filter(|(p, _)| !p.starts_with("/meta/"))
+            .collect();
+        assert_eq!(listed, expected);
+    }
 
     #[rstest]
     fn from_rpx(#[files("tests/dkp/wuhb/*.wuhb")] path: PathBuf) {
@@ -522,8 +788,7 @@ mod tests {
         let converted = super::from_rpx(
             rpx,
             WuhbConfig {
-                long_name: String::from(filename),
-                short_name: String::from(filename),
+                name: String::from(filename),
                 ..Default::default()
             },
         )
