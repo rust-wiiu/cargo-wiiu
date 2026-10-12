@@ -1158,16 +1158,140 @@ mod tests {
         assert!(text(&converted) == text(&original));
     }
 
-    // Cannot test like this because some minor differences
-    // #[test]
-    // fn from_elf() {
-    //     let elf = fs::read("tests/dkp/elf/helloworld.elf").unwrap();
-    //     let rpx = fs::read("tests/dkp/rpx/helloworld.rpx").unwrap();
+    /// Compares against devkitPro's elf2rpl output. The compressed bytes are not compared (zlib
+    /// implementations differ), only the decompressed sections. Two differences are allowed:
+    /// - Relocations may be in a different order (elf2rpl appends the `GHS_REL16_LO` halves).
+    /// - elf2rpl moves section symbols with value 0 (those of the removed `.debug_*` sections) to
+    ///   the address of `.symtab`. Leaving them at 0 is fine as well.
+    /// - elf2rpl renames `__rplwrap_<name>` symbols to `<name>`, so symbol names are compared
+    ///   without that prefix.
+    #[rstest]
+    fn from_elf(#[files("tests/dkp/elf/*.elf")] path: PathBuf) {
+        let filename = path.file_stem().unwrap().to_str().unwrap();
 
-    //     let converted = super::from_elf(elf, false);
+        let rpl = PathBuf::from(format!("./tests/dkp/rpl/{filename}.rpl"));
+        let (expected, is_rpl) = match rpl.exists() {
+            true => (rpl, true),
+            false => (
+                PathBuf::from(format!("./tests/dkp/rpx/{filename}.rpx")),
+                false,
+            ),
+        };
 
-    //     fs::write("tests/converted.rpx", &converted).unwrap();
+        let expected = super::RpxFile::read(fs::read(expected).unwrap()).unwrap();
+        let converted =
+            super::RpxFile::read(super::from_elf(fs::read(&path).unwrap(), is_rpl)).unwrap();
 
-    //     assert_eq!(converted, rpx);
-    // }
+        assert_eq!(
+            format!("{:?}", converted.header),
+            format!("{:?}", expected.header)
+        );
+        assert_eq!(converted.sections.len(), expected.sections.len());
+
+        let symtab_addr = expected
+            .sections
+            .iter()
+            .find(|s| s.header.ty == elf::SectionType::SYMTAB)
+            .unwrap()
+            .header
+            .addr;
+
+        for (i, (c, e)) in converted
+            .sections
+            .iter()
+            .zip(&expected.sections)
+            .enumerate()
+        {
+            let header = |s: &super::Section| {
+                let mut header = s.header.clone();
+                header.offset = 0;
+                format!("{header:?}")
+            };
+            assert_eq!(header(c), header(e), "header of section {i} {}", e.name);
+
+            match e.header.ty {
+                elf::SectionType::RELA => {
+                    let sorted = |s: &super::Section| {
+                        let mut rels: Vec<_> = s
+                            .data
+                            .as_rela()
+                            .iter()
+                            .map(|r| (r.offset, r.info, r.addend))
+                            .collect();
+                        rels.sort();
+                        rels
+                    };
+                    assert_eq!(sorted(c), sorted(e), "relocations of {}", e.name);
+                }
+                elf::SectionType::SYMTAB => {
+                    let name = |file: &super::RpxFile, offset: u32| {
+                        let strtab = file.sections[c.header.link as usize].data.as_bytes();
+                        let name = std::ffi::CStr::from_bytes_until_nul(&strtab[offset as usize..])
+                            .unwrap()
+                            .to_str()
+                            .unwrap();
+                        name.strip_prefix("__rplwrap_").unwrap_or(name).to_string()
+                    };
+                    for (j, (cs, es)) in c
+                        .data
+                        .as_symbol()
+                        .iter()
+                        .zip(e.data.as_symbol())
+                        .enumerate()
+                    {
+                        let debug_section_symbol = elf::SymbolType(es.info & 0xF)
+                            == elf::SymbolType::SECTION
+                            && cs.value == 0
+                            && es.value == symtab_addr;
+                        assert_eq!(
+                            (
+                                name(&converted, cs.name),
+                                cs.size,
+                                cs.info,
+                                cs.other,
+                                cs.shndx
+                            ),
+                            (
+                                name(&expected, es.name),
+                                es.size,
+                                es.info,
+                                es.other,
+                                es.shndx
+                            ),
+                            "symbol {j}"
+                        );
+                        assert!(
+                            cs.value == es.value || debug_section_symbol,
+                            "value of symbol {j}: {:#X} != {:#X}",
+                            cs.value,
+                            es.value
+                        );
+                    }
+                }
+                elf::SectionType::RPL_CRCS => {
+                    // Sections allowed to differ above have their own CRC, the rest must match
+                    let crcs = |s: &super::Section| {
+                        s.data
+                            .as_bytes()
+                            .chunks(4)
+                            .map(|c| u32::from_be_bytes(c.try_into().unwrap()))
+                            .collect::<Vec<_>>()
+                    };
+                    for (j, (cc, ec)) in crcs(c).into_iter().zip(crcs(e)).enumerate() {
+                        let section = &converted.sections[j];
+                        // The CRC section's own CRC is always 0
+                        if j == i || section.data.as_bytes() == expected.sections[j].data.as_bytes()
+                        {
+                            assert_eq!(cc, ec, "CRC of section {j}");
+                        } else {
+                            let mut crc = flate2::Crc::new();
+                            crc.update(section.data.as_bytes());
+                            assert_eq!(cc, crc.sum(), "CRC of section {j}");
+                        }
+                    }
+                }
+                _ => assert!(c.data.as_bytes() == e.data.as_bytes(), "data of {}", e.name),
+            }
+        }
+    }
 }
