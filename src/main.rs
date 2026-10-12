@@ -233,6 +233,7 @@ enum Commands {
         #[arg(value_parser = extension(["rpl"]))]
         rpl: Option<PathBuf>,
     },
+    /// Convert RPX to WUHB
     Wuhb {
         /// Path to the binary (elf / rpx)
         #[arg(value_parser = extension(["rpx"]))]
@@ -243,6 +244,15 @@ enum Commands {
         /// Configuration flags for the WUHB archive
         #[command(flatten)]
         config: WuhbConfig,
+    },
+    /// Convert RPX/RPL back to ELF
+    Elf {
+        /// Path to the rpx / rpl binary
+        #[arg(value_parser = extension(["rpx", "rpl"]))]
+        input: PathBuf,
+        /// Path to the resulting elf binary. Defaults to input path with ".elf" appended.
+        #[arg(value_parser = extension(["elf"]))]
+        elf: Option<PathBuf>,
     },
 }
 
@@ -336,6 +346,22 @@ fn main() -> anyhow::Result<()> {
 
             log::info!("Write output file");
             fs::write(&rpl, output).context(format!("Failed to write file: {}", rpl.display()))?;
+        }
+        Commands::Elf { input, elf } => {
+            let elf = elf.unwrap_or_else(|| {
+                let mut path = input.clone().into_os_string();
+                path.push(".elf");
+                PathBuf::from(path)
+            });
+
+            log::info!("Read input file");
+            let data =
+                fs::read(&input).context(format!("Failed to read file: {}", input.display()))?;
+
+            let output = rpl::to_elf(data)?;
+
+            log::info!("Write output file");
+            fs::write(&elf, output).context(format!("Failed to write file: {}", elf.display()))?;
         }
         Commands::Wuhb {
             rpx,

@@ -1,10 +1,11 @@
 use crate::elf;
+use anyhow::Context;
 use binrw::{BinRead, BinWrite};
-use flate2::{Crc, write::ZlibEncoder};
+use flate2::{Crc, read::ZlibDecoder, write::ZlibEncoder};
 use std::{
     collections::HashMap,
     ffi::CStr,
-    io::{Cursor, Write},
+    io::{Cursor, Read, Write},
 };
 
 #[derive(Debug)]
@@ -66,15 +67,15 @@ impl SectionData {
         .unwrap()
     }
 
-    // pub fn from_symbol(&mut self, symbols: Vec<elf::Symbol>) {
-    //     let mut writer = Cursor::new(Vec::new());
+    pub fn from_symbol(&mut self, symbols: Vec<elf::Symbol>) {
+        let mut writer = Cursor::new(Vec::new());
 
-    //     symbols
-    //         .write_options(&mut writer, binrw::Endian::Big, ())
-    //         .unwrap();
+        symbols
+            .write_options(&mut writer, binrw::Endian::Big, ())
+            .unwrap();
 
-    //     self.0 = writer.into_inner();
-    // }
+        self.0 = writer.into_inner();
+    }
 }
 
 #[derive(Debug)]
@@ -877,10 +878,285 @@ pub fn from_elf(input: Vec<u8>, is_rpl: bool) -> Vec<u8> {
     output
 }
 
+#[derive(Debug)]
+struct RpxFile {
+    pub header: elf::Header,
+    pub sections: Vec<Section>,
+}
+
+impl RpxFile {
+    /// Imports are moved here so `R_PPC_REL24` branches from `.text` can still reach them.
+    const IMPORTS_BASE_ADDRESS: u32 = 0x01000000;
+
+    fn read(data: Vec<u8>) -> anyhow::Result<Self> {
+        let mut cursor = Cursor::new(&data);
+
+        let header = elf::Header::read(&mut cursor).context("Failed to read ELF header")?;
+
+        anyhow::ensure!(header.magic == elf::Magic::ELF, "Invalid ELF magic");
+        anyhow::ensure!(
+            header.file_class == elf::Class::B32,
+            "Invalid ELF file class"
+        );
+        anyhow::ensure!(header.encoding == elf::Data::MSB, "Invalid ELF endianess");
+        anyhow::ensure!(
+            header.machine == elf::Machine::PPC,
+            "Invalid ELF machine type"
+        );
+
+        let mut sections = Vec::with_capacity(header.shnum as usize);
+        for i in 0..header.shnum as usize {
+            cursor.set_position(header.shoff as u64 + (i * header.shentsize as usize) as u64);
+            let mut section_header = elf::SectionHeader::read(&mut cursor)
+                .context(format!("Failed to read header of section {i}"))?;
+
+            let mut section_data = Vec::new();
+            if section_header.size > 0
+                && section_header.ty != elf::SectionType::NULL
+                && section_header.ty != elf::SectionType::NOBITS
+            {
+                let start = section_header.offset as usize;
+                let raw = data
+                    .get(start..start + section_header.size as usize)
+                    .context(format!("Section {i} lies outside of the file"))?;
+
+                if section_header.flags.0 & elf::SectionFlags::DEFLATED.0 != 0 {
+                    anyhow::ensure!(raw.len() >= 4, "Deflated section {i} is too small");
+                    let size = u32::from_be_bytes(raw[..4].try_into().unwrap());
+
+                    ZlibDecoder::new(&raw[4..])
+                        .read_to_end(&mut section_data)
+                        .context(format!("Failed to inflate section {i}"))?;
+                    anyhow::ensure!(
+                        section_data.len() == size as usize,
+                        "Section {i} inflated to {} bytes, expected {size}",
+                        section_data.len()
+                    );
+
+                    section_header.flags.0 &= !elf::SectionFlags::DEFLATED.0;
+                    section_header.size = size;
+                } else {
+                    section_data = raw.to_vec();
+                }
+            }
+
+            sections.push(Section {
+                header: section_header,
+                name: String::new(),
+                data: SectionData(section_data),
+                index: i,
+            });
+        }
+
+        if let Some(str_table) = sections
+            .get(header.shstrndx as usize)
+            .map(|s| s.data.as_vec())
+        {
+            for section in &mut sections {
+                section.name = str_table
+                    .get(section.header.name as usize..)
+                    .and_then(|s| CStr::from_bytes_until_nul(s).ok())
+                    .map(|s| s.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+            }
+        }
+
+        Ok(Self { header, sections })
+    }
+
+    /// Reverts the `R_PPC_REL32` -> `R_PPC_GHS_REL16_HI/LO` split done by [`ElfFile::fix_relocations`].
+    fn fix_relocations(&mut self) {
+        let ty = |r: &elf::Rela| elf::RelaType(r.info & 0xFF);
+
+        for section in &mut self.sections {
+            if section.header.ty != elf::SectionType::RELA {
+                continue;
+            }
+
+            section.header.flags = elf::SectionFlags::EMPTY;
+
+            let rels = section.data.as_rela();
+
+            let lo: HashMap<(u32, u32, i32), usize> = rels
+                .iter()
+                .enumerate()
+                .filter(|(_, r)| ty(r) == elf::RelaType::PPC_GHS_REL16_LO)
+                .map(|(j, r)| ((r.offset, r.info >> 8, r.addend), j))
+                .collect();
+            let lo_of = |r: &elf::Rela| lo.get(&(r.offset + 2, r.info >> 8, r.addend + 2));
+
+            let mut merged = vec![false; rels.len()];
+            for r in rels
+                .iter()
+                .filter(|r| ty(r) == elf::RelaType::PPC_GHS_REL16_HI)
+            {
+                match lo_of(r) {
+                    Some(&j) if !merged[j] => merged[j] = true,
+                    _ => log::warn!("Unpaired R_PPC_GHS_REL16_HI at {:#X}", r.offset),
+                }
+            }
+
+            let rels = rels
+                .iter()
+                .enumerate()
+                .filter_map(|(j, r)| match ty(r) {
+                    elf::RelaType::PPC_GHS_REL16_LO if merged[j] => None,
+                    elf::RelaType::PPC_GHS_REL16_HI if lo_of(r).is_some_and(|&j| merged[j]) => {
+                        Some(elf::Rela {
+                            info: (r.info & !0xFF) | elf::RelaType::PPC_REL32.0,
+                            ..r.clone()
+                        })
+                    }
+                    elf::RelaType::PPC_GHS_REL16_LO => {
+                        log::warn!("Unpaired R_PPC_GHS_REL16_LO at {:#X}", r.offset);
+                        Some(r.clone())
+                    }
+                    _ => Some(r.clone()),
+                })
+                .collect();
+
+            section.data.from_rela(rels);
+        }
+    }
+
+    fn relocate_imports(&mut self) {
+        let mut address = Self::IMPORTS_BASE_ADDRESS;
+
+        for i in 0..self.sections.len() {
+            if self.sections[i].header.ty != elf::SectionType::RPL_IMPORTS {
+                continue;
+            }
+
+            address = address.next_multiple_of(self.sections[i].header.addralign.max(1));
+            let old_address = self.sections[i].header.addr;
+
+            for section in &mut self.sections {
+                match section.header.ty {
+                    elf::SectionType::SYMTAB => {
+                        let mut symbols = section.data.as_symbol();
+                        for symbol in &mut symbols {
+                            if symbol.shndx as usize == i {
+                                symbol.value = symbol.value - old_address + address;
+                            }
+                        }
+                        section.data.from_symbol(symbols);
+                    }
+                    elf::SectionType::RELA if section.header.info as usize == i => {
+                        let mut rels = section.data.as_rela();
+                        for rela in &mut rels {
+                            rela.offset = rela.offset - old_address + address;
+                        }
+                        section.data.from_rela(rels);
+                    }
+                    _ => (),
+                }
+            }
+
+            self.sections[i].header.addr = address;
+            self.sections[i].header.flags |= elf::SectionFlags::ALLOC;
+            address += self.sections[i].data.len() as u32;
+        }
+    }
+
+    fn fix_file_header(&mut self) {
+        self.header.abi = elf::Eabi(0);
+        self.header.ty = 2; // ET_EXEC
+        self.header.phoff = 0;
+        self.header.phentsize = 0;
+        self.header.phnum = 0;
+        self.header.ehsize = size_of::<elf::Header>() as u16;
+        self.header.shentsize = size_of::<elf::SectionHeader>() as u16;
+    }
+
+    fn calculate_section_offsets(&mut self) {
+        let mut offset = size_of::<elf::Header>() as u32;
+
+        for section in &mut self.sections {
+            match section.header.ty {
+                elf::SectionType::NULL => section.header.offset = 0,
+                elf::SectionType::NOBITS => section.header.offset = offset,
+                _ => {
+                    offset = offset.next_multiple_of(section.header.addralign.max(1));
+                    section.header.offset = offset;
+                    section.header.size = section.data.len() as u32;
+                    offset += section.header.size;
+                }
+            }
+        }
+
+        self.header.shoff = offset.next_multiple_of(4);
+    }
+
+    fn write(&self) -> Vec<u8> {
+        let mut cursor = Cursor::new(Vec::new());
+
+        self.header.write(&mut cursor).unwrap();
+
+        for section in &self.sections {
+            if section.data.len() > 0 {
+                cursor.set_position(section.header.offset as u64);
+                cursor.write_all(section.data.as_bytes()).unwrap();
+            }
+        }
+
+        cursor.set_position(self.header.shoff as u64);
+        for section in &self.sections {
+            section.header.write(&mut cursor).unwrap();
+        }
+
+        cursor.into_inner()
+    }
+}
+
+pub fn to_elf(input: Vec<u8>) -> anyhow::Result<Vec<u8>> {
+    let mut rpx = RpxFile::read(input)?;
+    log::info!("RPL file parsed successfully");
+    rpx.fix_relocations();
+    log::debug!("Relocations fixed");
+    rpx.relocate_imports();
+    log::debug!("Imports relocated");
+    rpx.fix_file_header();
+    log::debug!("File header fixed");
+    rpx.calculate_section_offsets();
+    log::debug!("Section offsets calculated");
+    let output = rpx.write();
+    log::info!("ELF file written successfully");
+    Ok(output)
+}
+
 #[cfg(test)]
 mod tests {
-    // use rstest::rstest;
-    // use std::{fs, path::PathBuf};
+    use crate::elf;
+    use rstest::rstest;
+    use std::{fs, path::PathBuf};
+
+    #[rstest]
+    fn to_elf(#[files("tests/dkp/rp[lx]/*.rp[lx]")] path: PathBuf) {
+        let filename = path.file_stem().unwrap().to_str().unwrap();
+
+        let rpl = fs::read(&path).unwrap();
+        let original =
+            super::ElfFile::read(fs::read(format!("./tests/dkp/elf/{filename}.elf")).unwrap());
+
+        let converted = super::ElfFile::read(super::to_elf(rpl).unwrap());
+
+        assert!(
+            converted
+                .sections
+                .iter()
+                .all(|s| s.header.flags.0 & elf::SectionFlags::DEFLATED.0 == 0)
+        );
+
+        let text = |elf: &super::ElfFile| {
+            elf.sections
+                .iter()
+                .find(|s| s.name == ".text")
+                .unwrap()
+                .data
+                .as_vec()
+        };
+        assert!(text(&converted) == text(&original));
+    }
 
     // Cannot test like this because some minor differences
     // #[test]
